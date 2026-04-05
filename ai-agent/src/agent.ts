@@ -8,7 +8,11 @@ dotenv.config();
 
 const PROGRAM_ID = new PublicKey('csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y');
 const NETWORK = 'devnet';
-const ENDPOINT = clusterApiUrl(NETWORK as any);
+const ENDPOINT = (
+  process.env.SOLANA_RPC_URL
+  || process.env.ALCHEMY_RPC_URL
+  || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8'
+).trim();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
@@ -271,6 +275,7 @@ export const getAgentHealth = async () => {
   return {
     ok: true,
     programId: PROGRAM_ID.toBase58(),
+    rpcEndpoint: ENDPOINT,
     agentPublicKey: keypair.publicKey.toBase58(),
     agentBalanceSol: balanceLamports / 1e9,
     env: {

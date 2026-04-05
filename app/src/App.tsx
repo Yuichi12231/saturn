@@ -24,7 +24,7 @@ import idl from './idl/vault_ai.json';
 
 const PROGRAM_ID = new PublicKey('csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y');
 const network = WalletAdapterNetwork.Devnet;
-const endpoint = clusterApiUrl(network);
+const endpoint = (import.meta.env.VITE_SOLANA_RPC_URL || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8').trim();
 
 interface TokenHolding {
   mint: PublicKey;
@@ -1139,6 +1139,7 @@ const AppContent = () => {
         <div style={{ fontSize: '0.9em', fontFamily: 'monospace', color: '#9ca3af' }}>
           <div>Network: Devnet</div>
           <div>Program: {PROGRAM_ID.toBase58().slice(0, 12)}...</div>
+          <div>RPC: {endpoint.slice(0, 42)}...</div>
           <div>Wallet: {wallet.connected ? anchorWallet?.publicKey?.toBase58().slice(0, 12) + '...' : 'Not connected'}</div>
           <div>Vault withdrawable SOL: {(vaultSolBalanceLamports / 1e9).toFixed(6)}</div>
           {vault && (
