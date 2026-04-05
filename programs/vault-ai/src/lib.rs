@@ -39,24 +39,25 @@ pub mod vault_ai {
 
     pub fn deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::InvalidAmount);
+        require!(ctx.accounts.vault.owner == ctx.accounts.authority.key(), VaultError::Unauthorized);
 
-        let vault = &mut ctx.accounts.vault;
-        require!(vault.owner == *ctx.accounts.authority.key, VaultError::Unauthorized);
-
-        anchor_lang::system_program::transfer(
-            CpiContext::new(
-                ctx.accounts.system_program.to_account_info(),
-                anchor_lang::system_program::Transfer {
-                    from: ctx.accounts.authority.to_account_info(),
-                    to: vault.to_account_info(),
-                },
-            ),
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            ctx.accounts.authority.key,
+            ctx.accounts.vault.to_account_info().key,
             amount,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.authority.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
         )?;
 
-        let vault_info = vault.to_account_info();
-        let rent_exempt_minimum = Rent::get()?.minimum_balance(vault_info.data_len());
-        let current_lamports = **vault_info.lamports.borrow();
+        let vault = &mut ctx.accounts.vault;
+        let rent_exempt_minimum = Rent::get()?.minimum_balance(vault.to_account_info().data_len());
+        let current_lamports = **vault.to_account_info().lamports.borrow();
         let available_sol = current_lamports.saturating_sub(rent_exempt_minimum);
         vault.total_value = available_sol.saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
         vault.last_updated = Clock::get()?.unix_timestamp;
