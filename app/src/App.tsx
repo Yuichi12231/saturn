@@ -48,6 +48,9 @@ const AppContent = () => {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('Ready');
   const [recommendation, setRecommendation] = useState('AI agent watching Solana market for risk-managed decisions.');
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentIntervalMinutes, setAgentIntervalMinutes] = useState(1);
+  const [agentTimerId, setAgentTimerId] = useState<number | null>(null);
 
   const connection = useMemo(() => new Connection(endpoint), []);
 
@@ -78,9 +81,11 @@ const AppContent = () => {
       );
       const data = await response.json();
       setMarket(data);
+      return data;
     } catch (error) {
       console.error(error);
       setMarket({});
+      return {};
     }
   }, []);
 
@@ -140,6 +145,61 @@ const AppContent = () => {
       setLoading(false);
     }
   }, [anchorWallet, fetchVault, program]);
+
+  const runAgentTick = useCallback(async () => {
+    const currentMarket = await fetchMarketData();
+    const solChange = currentMarket.solana?.usd_24h_change ?? 0;
+    const rayChange = currentMarket.raydium?.usd_24h_change ?? 0;
+    const orcaChange = currentMarket.orca?.usd_24h_change ?? 0;
+    let action = 'hold';
+    let message = 'Agent is watching the market.';
+
+    if (solChange < -2.5) {
+      action = 'sell';
+      message = `AI recommends reducing risk: sell or hedge SOL. 24h change ${solChange.toFixed(2)}%.`;
+    } else if (rayChange > 2.5) {
+      action = 'buy';
+      message = `AI recommends buying RAY on momentum. 24h change ${rayChange.toFixed(2)}%.`;
+    } else if (orcaChange > 1.8) {
+      action = 'buy';
+      message = `AI recommends buying ORCA on positive momentum. 24h change ${orcaChange.toFixed(2)}%.`;
+    } else {
+      message = `AI recommends holding for now. SOL ${solChange.toFixed(2)}%, RAY ${rayChange.toFixed(2)}%, ORCA ${orcaChange.toFixed(2)}%.`;
+    }
+
+    setRecommendation(message);
+    setStatus(`Agent last ran at ${new Date().toLocaleTimeString()}`);
+    return action;
+  }, [fetchMarketData]);
+
+  const stopAgent = useCallback(() => {
+    if (agentTimerId !== null) {
+      window.clearInterval(agentTimerId);
+      setAgentTimerId(null);
+    }
+    setAgentRunning(false);
+    setStatus('Agent stopped.');
+  }, [agentTimerId]);
+
+  const startAgent = useCallback(async () => {
+    if (agentRunning) return;
+    const action = await runAgentTick();
+    setAgentRunning(true);
+    setStatus(`Agent running every ${agentIntervalMinutes} minute(s). Last action: ${action}.`);
+    const timer = window.setInterval(async () => {
+      const nextAction = await runAgentTick();
+      setStatus(`Agent ran at ${new Date().toLocaleTimeString()}. Last action: ${nextAction}.`);
+    }, agentIntervalMinutes * 60 * 1000);
+    setAgentTimerId(timer);
+  }, [agentRunning, agentIntervalMinutes, runAgentTick]);
+
+  useEffect(() => {
+    return () => {
+      if (agentTimerId !== null) {
+        window.clearInterval(agentTimerId);
+      }
+    };
+  }, [agentTimerId]);
 
   useEffect(() => {
     fetchMarketData();
@@ -228,10 +288,36 @@ const AppContent = () => {
 
       <section className="card">
         <h2>AI Agent</h2>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
+          <button
+            onClick={agentRunning ? stopAgent : startAgent}
+            style={{
+              background: agentRunning ? '#dc2626' : '#16a34a',
+              color: '#fff',
+              minWidth: 140,
+            }}
+          >
+            {agentRunning ? 'Stop Agent' : 'Start Agent'}
+          </button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            Interval:
+            <select
+              value={agentIntervalMinutes}
+              onChange={(event) => setAgentIntervalMinutes(Number(event.target.value))}
+              style={{ padding: '10px', borderRadius: 12, background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.12)' }}
+            >
+              <option value={1}>1 minute</option>
+              <option value={3}>3 minutes</option>
+              <option value={5}>5 minutes</option>
+              <option value={10}>10 minutes</option>
+            </select>
+          </label>
+        </div>
         <p>{recommendation}</p>
-        <p>Run the agent separately to analyze market conditions and execute on-chain updates while preserving transparency.</p>
-        <pre style={{ background: 'rgba(255,255,255,0.04)', padding: 12, borderRadius: 12 }}>
-          npm run agent
+        <p>Agent status is controlled from this page and runs locally in the browser.</p>
+        <pre style={{ background: 'rgba(255,255,255,0.04)', padding: 12, borderRadius: 12, whiteSpace: 'pre-wrap' }}>
+          Agent interval: {agentIntervalMinutes} minute(s)
+          {'\n'}Status: {status}
         </pre>
       </section>
 
