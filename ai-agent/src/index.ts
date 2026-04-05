@@ -6,7 +6,7 @@ import { Connection, PublicKey, clusterApiUrl } from '@solana/web3.js';
 
 dotenv.config();
 
-const PROGRAM_ID = new PublicKey('VaultAI111111111111111111111111111111111111');
+const PROGRAM_ID = new PublicKey('CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW');
 const NETWORK = 'devnet';
 const ENDPOINT = clusterApiUrl(NETWORK as any);
 

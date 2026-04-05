@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("VaultAI111111111111111111111111111111111111");
+declare_id!("CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW");
 
 #[program]
 pub mod vault_ai {

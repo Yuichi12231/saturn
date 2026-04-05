@@ -22,7 +22,7 @@ import {
 import { PhantomWalletAdapter } from '@solana/wallet-adapter-wallets';
 import idl from './idl/vault_ai.json';
 
-const PROGRAM_ID = new PublicKey('VaultAI111111111111111111111111111111111111');
+const PROGRAM_ID = new PublicKey('CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW');
 const network = WalletAdapterNetwork.Devnet;
 const endpoint = clusterApiUrl(network);
 
