@@ -1,0 +1,9 @@
+[programs.localnet]
+vault_ai = "VaultAI111111111111111111111111111111111111"
+
+[registry]
+url = "https://anchor.projectserum.com"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"

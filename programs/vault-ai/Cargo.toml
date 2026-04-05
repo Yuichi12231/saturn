@@ -1,0 +1,11 @@
+[package]
+name = "vault-ai"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vault_ai"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+anchor-lang = "0.34.2"
