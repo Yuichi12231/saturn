@@ -1,7 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
-import { getAgentState, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
+import { getAgentHealth, getAgentState, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
 
 dotenv.config();
 
@@ -13,6 +13,16 @@ app.use(express.json());
 
 app.get('/api/agent/status', (req: Request, res: Response) => {
   res.json(getAgentState());
+});
+
+app.get('/api/agent/health', async (req: Request, res: Response) => {
+  try {
+    const health = await getAgentHealth();
+    res.json(health);
+  } catch (error) {
+    const message = (error as any)?.message || 'Failed to collect health information';
+    res.status(500).json({ ok: false, error: message });
+  }
 });
 
 app.post('/api/agent/start', async (req: Request, res: Response) => {
@@ -28,8 +38,9 @@ app.post('/api/agent/start', async (req: Request, res: Response) => {
     const status = await startAgentSchedule(interval, vaultOwner);
     res.json(status);
   } catch (error) {
-    console.error('Failed to start agent:', (error as any).message || error);
-    res.status(500).json({ error: 'Failed to start agent' });
+    const message = (error as any)?.message || 'Failed to start agent';
+    console.error('Failed to start agent:', message);
+    res.status(500).json({ error: message });
   }
 });
 

@@ -220,15 +220,33 @@ let lastAction = 'Agent has not run yet.';
 let lastMessage = 'Ready to run.';
 let running = false;
 let currentVaultOwner: PublicKey | null = null;
+let lastError: string | null = null;
 
 export const getAgentState = () => ({
   running,
   intervalMinutes: currentIntervalMinutes,
   lastAction,
   message: lastMessage,
+  lastError,
   agentPublicKey: keypair.publicKey.toBase58(),
   vaultOwner: currentVaultOwner?.toBase58() || null,
 });
+
+export const getAgentHealth = async () => {
+  const balanceLamports = await connection.getBalance(keypair.publicKey);
+  return {
+    ok: true,
+    programId: PROGRAM_ID.toBase58(),
+    agentPublicKey: keypair.publicKey.toBase58(),
+    agentBalanceSol: balanceLamports / 1e9,
+    env: {
+      openaiConfigured: Boolean(OPENAI_API_KEY),
+      heliusConfigured: Boolean(HELIUS_API_KEY),
+      birdeyeConfigured: Boolean(BIRDEYE_API_KEY),
+      walletConfigured: Boolean(SECRET_KEY),
+    },
+  };
+};
 
 export const runAgentOnce = async () => {
   if (!currentVaultOwner) {
@@ -237,6 +255,7 @@ export const runAgentOnce = async () => {
 
   await ensureAgentHasFunds();
   const vaultPda = await ensureVaultExists(currentVaultOwner);
+  lastError = null;
 
   const market = await getMarketData();
   const heliusSignals = await getHeliusSignals();
@@ -306,11 +325,18 @@ export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: st
   currentIntervalMinutes = intervalMinutes;
   running = true;
   lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()}.`;
-  await runAgentOnce();
+  try {
+    await runAgentOnce();
+  } catch (error) {
+    const message = (error as any)?.message || 'Initial run failed';
+    lastError = message;
+    lastMessage = `Agent started, but initial run failed: ${message}`;
+  }
   scheduledAgent = setInterval(async () => {
     try {
       await runAgentOnce();
     } catch (error) {
+      lastError = (error as any)?.message || 'Scheduled run failed';
       console.warn('Scheduled agent execution failed:', error);
     }
   }, intervalMinutes * 60 * 1000);

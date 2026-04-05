@@ -68,6 +68,7 @@ const AppContent = () => {
   const [agentReady, setAgentReady] = useState(false);
   const [backendAgentWallet, setBackendAgentWallet] = useState('');
   const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
+  const [pendingVaultMode, setPendingVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
 
   const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
@@ -136,6 +137,7 @@ const AppContent = () => {
         lastUpdated: account.lastUpdated,
       });
       setVaultMode(mode);
+      setPendingVaultMode(mode);
       setVaultEnabled(account.enabled);
       setStatus('Vault loaded');
     } catch (error) {
@@ -524,7 +526,7 @@ const AppContent = () => {
                         value="safe"
                         checked={vaultMode === 'safe'}
                         disabled={loading || !walletMatchesVaultOwner}
-                        onChange={() => toggleVaultMode('safe', vaultEnabled)}
+                        onChange={() => setPendingVaultMode('safe')}
                       />
                       Safe Mode
                     </label>
@@ -535,7 +537,7 @@ const AppContent = () => {
                         value="risk"
                         checked={vaultMode === 'risk'}
                         disabled={loading || !walletMatchesVaultOwner}
-                        onChange={() => toggleVaultMode('risk', vaultEnabled)}
+                        onChange={() => setPendingVaultMode('risk')}
                       />
                       Risk Mode
                     </label>
@@ -545,8 +547,15 @@ const AppContent = () => {
                     <strong style={{ color: vaultEnabled ? '#16a34a' : '#9ca3af' }}>
                       {vaultEnabled ? 'ON' : 'OFF'}
                     </strong>
+                    <button
+                      onClick={() => toggleVaultMode(pendingVaultMode, vaultEnabled)}
+                      disabled={loading || !walletMatchesVaultOwner || pendingVaultMode === vaultMode}
+                      style={{ background: '#0ea5e9', color: '#fff' }}
+                    >
+                      Apply Mode
+                    </button>
                     <span style={{ fontSize: '0.9em', color: '#9ca3af' }}>
-                      {vaultMode === 'safe' ? '🛡️ Preserve balance' : '⚡ Active trading'}
+                      {pendingVaultMode === 'safe' ? '🛡️ Preserve balance' : '⚡ Active trading'}
                     </span>
                   </div>
                   <div style={{ marginTop: 8, fontSize: '0.85em', color: '#cbd5e1' }}>
