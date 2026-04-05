@@ -10,12 +10,13 @@ const PROGRAM_ID = new PublicKey('csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y');
 const NETWORK = 'devnet';
 const ENDPOINT = clusterApiUrl(NETWORK as any);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const SECRET_KEY = process.env.AGENT_WALLET_SECRET_KEY;
 
-if (!OPENAI_API_KEY || !HELIUS_API_KEY || !BIRDEYE_API_KEY || !SECRET_KEY) {
-  throw new Error('AGENT_WALLET_SECRET_KEY, OPENAI_API_KEY, HELIUS_API_KEY, and BIRDEYE_API_KEY are required in .env');
+if (!SECRET_KEY) {
+  throw new Error('AGENT_WALLET_SECRET_KEY is required in .env');
 }
 
 function parseSecretKey(secret: string): Uint8Array {
@@ -119,6 +120,11 @@ const getMarketData = async () => {
 };
 
 const getHeliusSignals = async () => {
+  if (!HELIUS_API_KEY) {
+    heliusError = 'HELIUS_API_KEY is not configured';
+    return null;
+  }
+
   try {
     const url = 'https://api.helius.xyz/v0/addresses/transactions';
     const response = await axios.post(
@@ -132,37 +138,53 @@ const getHeliusSignals = async () => {
           'Content-Type': 'application/json',
           'x-api-key': HELIUS_API_KEY,
         },
+        timeout: 15000,
       },
     );
+    heliusError = null;
     return response.data;
   } catch (error) {
     const axiosError = error as any;
+    heliusError = String(axiosError.response?.data?.error || axiosError.response?.data || axiosError.message || 'Helius request failed');
     console.warn('Helius API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
 };
 
 const getBirdEyeMarket = async () => {
+  if (!BIRDEYE_API_KEY) {
+    birdeyeError = 'BIRDEYE_API_KEY is not configured';
+    return null;
+  }
+
   try {
     const response = await axios.get('https://api.birdeye.so/v1/market/overview', {
       headers: {
         Authorization: `Bearer ${BIRDEYE_API_KEY}`,
       },
+      timeout: 15000,
     });
+    birdeyeError = null;
     return response.data;
   } catch (error) {
     const axiosError = error as any;
+    birdeyeError = String(axiosError.response?.data?.message || axiosError.response?.data || axiosError.message || 'BirdEye request failed');
     console.warn('BirdEye API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
 };
 
 const askOpenAI = async (prompt: string) => {
+  if (!OPENAI_API_KEY) {
+    openAiError = 'OPENAI_API_KEY is not configured';
+    return { action: 'hold', reason: 'OpenAI API key is not configured.' };
+  }
+
   try {
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-3.5-turbo',
+        model: OPENAI_MODEL,
         messages: [
           {
             role: 'system',
@@ -182,6 +204,7 @@ const askOpenAI = async (prompt: string) => {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
           'Content-Type': 'application/json',
         },
+        timeout: 20000,
       },
     );
 
@@ -190,6 +213,8 @@ const askOpenAI = async (prompt: string) => {
       throw new Error('OpenAI did not return a response.');
     }
 
+    openAiError = null;
+
     try {
       return JSON.parse(text.replace(/\n/g, ' ').trim());
     } catch (error) {
@@ -197,6 +222,7 @@ const askOpenAI = async (prompt: string) => {
     }
   } catch (error) {
     const axiosError = error as any;
+    openAiError = String(axiosError.response?.data?.error?.message || axiosError.response?.data || axiosError.message || 'OpenAI request failed');
     console.warn('OpenAI request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return { action: 'hold', reason: 'OpenAI request failed.' };
   }
@@ -221,6 +247,9 @@ let lastMessage = 'Ready to run.';
 let running = false;
 let currentVaultOwner: PublicKey | null = null;
 let lastError: string | null = null;
+let openAiError: string | null = null;
+let heliusError: string | null = null;
+let birdeyeError: string | null = null;
 
 export const getAgentState = () => ({
   running,
@@ -234,6 +263,11 @@ export const getAgentState = () => ({
 
 export const getAgentHealth = async () => {
   const balanceLamports = await connection.getBalance(keypair.publicKey);
+
+  const openaiStatus = !OPENAI_API_KEY ? 'not_configured' : openAiError ? 'error' : 'configured';
+  const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
+  const birdeyeStatus = !BIRDEYE_API_KEY ? 'not_configured' : birdeyeError ? 'error' : 'configured';
+
   return {
     ok: true,
     programId: PROGRAM_ID.toBase58(),
@@ -245,6 +279,17 @@ export const getAgentHealth = async () => {
       birdeyeConfigured: Boolean(BIRDEYE_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
     },
+    checks: {
+      openai: openaiStatus,
+      helius: heliusStatus,
+      birdeye: birdeyeStatus,
+    },
+    errors: {
+      openai: openAiError,
+      helius: heliusError,
+      birdeye: birdeyeError,
+    },
+    lastError,
   };
 };
 

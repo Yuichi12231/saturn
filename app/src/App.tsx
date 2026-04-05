@@ -43,6 +43,36 @@ interface VaultState {
   lastUpdated: anchor.BN;
 }
 
+interface AgentHealth {
+  ok: boolean;
+  agentPublicKey?: string;
+  agentBalanceSol?: number;
+  env?: {
+    openaiConfigured?: boolean;
+    heliusConfigured?: boolean;
+    birdeyeConfigured?: boolean;
+    walletConfigured?: boolean;
+  };
+  checks?: {
+    openai?: string;
+    helius?: string;
+    birdeye?: string;
+  };
+  errors?: {
+    openai?: string | null;
+    helius?: string | null;
+    birdeye?: string | null;
+  };
+  lastError?: string | null;
+}
+
+interface TraderAnalytics {
+  breadthPct: number;
+  avg24hChange: number;
+  momentumScore: number;
+  volatilityScore: number;
+}
+
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
 
 const extractErrorMessage = (error: unknown): string => {
@@ -71,8 +101,12 @@ const AppContent = () => {
   const [pendingVaultMode, setPendingVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
   const [vaultSolBalanceLamports, setVaultSolBalanceLamports] = useState(0);
+  const [vaultAccountLamports, setVaultAccountLamports] = useState(0);
+  const [vaultRentReserveLamports, setVaultRentReserveLamports] = useState(0);
   const [depositSolInput, setDepositSolInput] = useState('0.1');
   const [withdrawSolInput, setWithdrawSolInput] = useState('0.1');
+  const [agentHealth, setAgentHealth] = useState<AgentHealth | null>(null);
+  const [marketAnalytics, setMarketAnalytics] = useState<TraderAnalytics | null>(null);
 
   const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || (runningLocalFrontend ? 'http://localhost:3001' : '')).trim();
@@ -106,10 +140,33 @@ const AppContent = () => {
       );
       const data = await response.json();
       setMarket(data);
+
+      const pairs = Object.values(data as Record<string, any>).filter(
+        (entry: any) => Number.isFinite(entry?.usd_24hr_change),
+      ) as Array<{ usd_24hr_change: number }>;
+      if (pairs.length > 0) {
+        const changes = pairs.map((entry) => Number(entry.usd_24hr_change));
+        const avg24hChange = changes.reduce((sum, value) => sum + value, 0) / changes.length;
+        const breadthPct = (changes.filter((value) => value > 0).length / changes.length) * 100;
+        const volatilityScore = Math.min(
+          100,
+          Math.max(0, changes.reduce((sum, value) => sum + Math.abs(value), 0) / changes.length * 4),
+        );
+        const momentumScore = Math.min(100, Math.max(0, 50 + avg24hChange * 2));
+        setMarketAnalytics({
+          breadthPct,
+          avg24hChange,
+          momentumScore,
+          volatilityScore,
+        });
+      } else {
+        setMarketAnalytics(null);
+      }
       return data;
     } catch (error) {
       console.error(error);
       setMarket({});
+      setMarketAnalytics(null);
       return {};
     }
   }, []);
@@ -127,6 +184,8 @@ const AppContent = () => {
       const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
       const rentExemptMin = await connection.getMinimumBalanceForRentExemption(vaultAccountInfo?.data.length || 0);
       const vaultSolLamports = Math.max((vaultAccountInfo?.lamports || 0) - rentExemptMin, 0);
+      setVaultAccountLamports(vaultAccountInfo?.lamports || 0);
+      setVaultRentReserveLamports(rentExemptMin);
       const mode = account.mode === 0 ? 'safe' : 'risk';
       setVaultSolBalanceLamports(vaultSolLamports);
       setVault({
@@ -151,6 +210,8 @@ const AppContent = () => {
       console.warn('Vault not found or failed to load', error);
       setVault(null);
       setVaultSolBalanceLamports(0);
+      setVaultAccountLamports(0);
+      setVaultRentReserveLamports(0);
       setStatus('Vault not created yet');
     } finally {
       setLoading(false);
@@ -476,6 +537,17 @@ const AppContent = () => {
     }
   }, [agentIntervalMinutes, callAgentApi]);
 
+  const refreshAgentHealth = useCallback(async () => {
+    const result = await callAgentApi('/api/agent/health');
+    if (result) {
+      const health = result as AgentHealth;
+      setAgentHealth(health);
+      if (health.agentPublicKey) {
+        setBackendAgentWallet(health.agentPublicKey);
+      }
+    }
+  }, [callAgentApi]);
+
   const startRemoteAgent = useCallback(async () => {
     if (!anchorWallet || !program) {
       setAgentStatus('Connect wallet first to select your vault owner address.');
@@ -553,7 +625,8 @@ const AppContent = () => {
 
   useEffect(() => {
     refreshAgentStatus();
-  }, [refreshAgentStatus]);
+    refreshAgentHealth();
+  }, [refreshAgentStatus, refreshAgentHealth]);
 
   useEffect(() => {
     fetchMarketData();
@@ -586,9 +659,42 @@ const AppContent = () => {
             Object.entries(market).map(([symbol, data]) => (
               <div key={symbol} className="metric">
                 <div>{symbol.toUpperCase()}</div>
-                <div>${(data as any).usd.toFixed(2)} </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div>${(data as any).usd.toFixed(2)}</div>
+                  <div style={{ fontSize: '0.85em', color: (data as any).usd_24hr_change >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {(data as any).usd_24hr_change?.toFixed?.(2) ?? '0.00'}%
+                  </div>
+                </div>
               </div>
             ))
+          )}
+        </section>
+
+        <section className="card">
+          <h2>Trader Analytics</h2>
+          {marketAnalytics ? (
+            <>
+              <div className="metric">
+                <span>Market breadth</span>
+                <strong>{marketAnalytics.breadthPct.toFixed(1)}%</strong>
+              </div>
+              <div className="metric">
+                <span>Average 24h change</span>
+                <strong style={{ color: marketAnalytics.avg24hChange >= 0 ? '#22c55e' : '#ef4444' }}>
+                  {marketAnalytics.avg24hChange.toFixed(2)}%
+                </strong>
+              </div>
+              <div className="metric">
+                <span>Momentum score</span>
+                <strong>{marketAnalytics.momentumScore.toFixed(1)} / 100</strong>
+              </div>
+              <div className="metric">
+                <span>Volatility score</span>
+                <strong>{marketAnalytics.volatilityScore.toFixed(1)} / 100</strong>
+              </div>
+            </>
+          ) : (
+            <p>Analytics will appear once market feeds are available.</p>
           )}
         </section>
 
@@ -606,6 +712,14 @@ const AppContent = () => {
                 <div className="metric">
                   <span>Vault SOL balance</span>
                   <strong>{(vaultSolBalanceLamports / 1e9).toFixed(6)} SOL</strong>
+                </div>
+                <div className="metric">
+                  <span>Vault lamports (raw)</span>
+                  <strong>{(vaultAccountLamports / 1e9).toFixed(6)} SOL</strong>
+                </div>
+                <div className="metric">
+                  <span>Rent reserve (locked)</span>
+                  <strong>{(vaultRentReserveLamports / 1e9).toFixed(6)} SOL</strong>
                 </div>
                 <div className="metric">
                   <span>Risk score</span>
@@ -787,7 +901,20 @@ const AppContent = () => {
           {'\n'}Status: {agentStatus}
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
+          {'\n'}OpenAI: {agentHealth?.checks?.openai || 'unknown'}
+          {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
+          {'\n'}BirdEye: {agentHealth?.checks?.birdeye || 'unknown'}
+          {'\n'}Agent SOL: {typeof agentHealth?.agentBalanceSol === 'number' ? agentHealth.agentBalanceSol.toFixed(4) : 'unknown'}
         </pre>
+        {(agentHealth?.errors?.openai || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.lastError) && (
+          <div style={{ marginTop: 10, color: '#f59e0b' }}>
+            <div>API diagnostics:</div>
+            {agentHealth?.errors?.openai && <div>OpenAI error: {agentHealth.errors.openai}</div>}
+            {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
+            {agentHealth?.errors?.birdeye && <div>BirdEye error: {agentHealth.errors.birdeye}</div>}
+            {agentHealth?.lastError && <div>Last agent run error: {agentHealth.lastError}</div>}
+          </div>
+        )}
         {!agentBackendConfigured && (
           <p style={{ color: '#f59e0b' }}>
             Set VITE_AGENT_API_URL in frontend environment (Vercel Project Settings → Environment Variables), then redeploy.
@@ -809,6 +936,7 @@ const AppContent = () => {
           <div>Network: Devnet</div>
           <div>Program: {PROGRAM_ID.toBase58().slice(0, 12)}...</div>
           <div>Wallet: {wallet.connected ? anchorWallet?.publicKey?.toBase58().slice(0, 12) + '...' : 'Not connected'}</div>
+          <div>Vault withdrawable SOL: {(vaultSolBalanceLamports / 1e9).toFixed(6)}</div>
           {vault && (
             <div>Vault owner: {vault.owner.toBase58().slice(0, 12)}... {walletMatchesVaultOwner ? '(match)' : '(mismatch)'}</div>
           )}
