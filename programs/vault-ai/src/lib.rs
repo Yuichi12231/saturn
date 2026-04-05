@@ -10,7 +10,6 @@ pub mod vault_ai {
         let vault = &mut ctx.accounts.vault;
         vault.owner = *ctx.accounts.authority.key;
         vault.agent_authority = *ctx.accounts.authority.key;
-        vault.vault_sol_balance = 0;
         vault.total_value = 0;
         vault.risk_score = 50;
         vault.mode = VaultMode::Safe as u8;
@@ -55,10 +54,11 @@ pub mod vault_ai {
             amount,
         )?;
 
-        vault.vault_sol_balance = vault.vault_sol_balance.saturating_add(amount);
-        vault.total_value = vault
-            .vault_sol_balance
-            .saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
+        let vault_info = vault.to_account_info();
+        let rent_exempt_minimum = Rent::get()?.minimum_balance(vault_info.data_len());
+        let current_lamports = **vault_info.lamports.borrow();
+        let available_sol = current_lamports.saturating_sub(rent_exempt_minimum);
+        vault.total_value = available_sol.saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
         vault.last_updated = Clock::get()?.unix_timestamp;
         Ok(())
     }
@@ -68,16 +68,13 @@ pub mod vault_ai {
 
         let vault = &mut ctx.accounts.vault;
         require!(vault.owner == *ctx.accounts.authority.key, VaultError::Unauthorized);
-        require!(vault.vault_sol_balance >= amount, VaultError::InsufficientVaultBalance);
 
         let vault_info = vault.to_account_info();
         let authority_info = ctx.accounts.authority.to_account_info();
         let current_lamports = **vault_info.lamports.borrow();
         let rent_exempt_minimum = Rent::get()?.minimum_balance(vault_info.data_len());
-        require!(
-            current_lamports.saturating_sub(amount) >= rent_exempt_minimum,
-            VaultError::InsufficientVaultBalance
-        );
+        let available_sol = current_lamports.saturating_sub(rent_exempt_minimum);
+        require!(available_sol >= amount, VaultError::InsufficientVaultBalance);
 
         **vault_info.try_borrow_mut_lamports()? = current_lamports
             .checked_sub(amount)
@@ -88,10 +85,8 @@ pub mod vault_ai {
             .checked_add(amount)
             .ok_or(VaultError::InvalidAmount)?;
 
-        vault.vault_sol_balance = vault.vault_sol_balance.saturating_sub(amount);
-        vault.total_value = vault
-            .vault_sol_balance
-            .saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
+        let new_available_sol = available_sol.saturating_sub(amount);
+        vault.total_value = new_available_sol.saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
         vault.last_updated = Clock::get()?.unix_timestamp;
         Ok(())
     }
@@ -132,9 +127,10 @@ pub mod vault_ai {
             }
         }
 
-        vault.total_value = vault
-            .vault_sol_balance
-            .saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
+        let vault_info = vault.to_account_info();
+        let rent_exempt_minimum = Rent::get()?.minimum_balance(vault_info.data_len());
+        let available_sol = (**vault_info.lamports.borrow()).saturating_sub(rent_exempt_minimum);
+        vault.total_value = available_sol.saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
 
         Ok(())
     }
@@ -197,7 +193,6 @@ pub struct WithdrawSol<'info> {
 pub struct Vault {
     pub owner: Pubkey,
     pub agent_authority: Pubkey,
-    pub vault_sol_balance: u64,
     pub total_value: u64,
     pub risk_score: u8,
     pub mode: u8,
@@ -215,7 +210,7 @@ pub struct TokenHolding {
 
 impl Vault {
     pub const MAX_HOLDINGS: usize = 8;
-    pub const MAX_SIZE: usize = 8 + 32 + 32 + 8 + 8 + 1 + 1 + 1 + 4 + Self::MAX_HOLDINGS * (32 + 8 + 1) + 8;
+    pub const MAX_SIZE: usize = 8 + 32 + 32 + 8 + 1 + 1 + 1 + 4 + Self::MAX_HOLDINGS * (32 + 8 + 1) + 8;
 }
 
 #[repr(u8)]

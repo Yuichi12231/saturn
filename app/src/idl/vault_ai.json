@@ -75,7 +75,6 @@
         "fields": [
           {"name": "owner", "type": "publicKey"},
           {"name": "agentAuthority", "type": "publicKey"},
-          {"name": "vaultSolBalance", "type": "u64"},
           {"name": "totalValue", "type": "u64"},
           {"name": "riskScore", "type": "u8"},
           {"name": "mode", "type": "u8"},

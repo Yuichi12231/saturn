@@ -35,7 +35,6 @@ interface TokenHolding {
 interface VaultState {
   owner: PublicKey;
   agentAuthority: PublicKey;
-  vaultSolBalance: anchor.BN;
   totalValue: anchor.BN;
   riskScore: number;
   mode: number;
@@ -71,6 +70,7 @@ const AppContent = () => {
   const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
   const [pendingVaultMode, setPendingVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
+  const [vaultSolBalanceLamports, setVaultSolBalanceLamports] = useState(0);
   const [depositSolInput, setDepositSolInput] = useState('0.1');
   const [withdrawSolInput, setWithdrawSolInput] = useState('0.1');
 
@@ -124,11 +124,14 @@ const AppContent = () => {
         PROGRAM_ID,
       );
       const account = await program.account.vault.fetch(vaultPda);
+      const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
+      const rentExemptMin = await connection.getMinimumBalanceForRentExemption(vaultAccountInfo?.data.length || 0);
+      const vaultSolLamports = Math.max((vaultAccountInfo?.lamports || 0) - rentExemptMin, 0);
       const mode = account.mode === 0 ? 'safe' : 'risk';
+      setVaultSolBalanceLamports(vaultSolLamports);
       setVault({
         owner: account.owner,
         agentAuthority: account.agentAuthority,
-        vaultSolBalance: account.vaultSolBalance,
         totalValue: account.totalValue,
         riskScore: account.riskScore,
         mode: account.mode,
@@ -147,6 +150,7 @@ const AppContent = () => {
     } catch (error) {
       console.warn('Vault not found or failed to load', error);
       setVault(null);
+      setVaultSolBalanceLamports(0);
       setStatus('Vault not created yet');
     } finally {
       setLoading(false);
@@ -601,7 +605,7 @@ const AppContent = () => {
                 </div>
                 <div className="metric">
                   <span>Vault SOL balance</span>
-                  <strong>{(vault.vaultSolBalance.toNumber() / 1e9).toFixed(6)} SOL</strong>
+                  <strong>{(vaultSolBalanceLamports / 1e9).toFixed(6)} SOL</strong>
                 </div>
                 <div className="metric">
                   <span>Risk score</span>
