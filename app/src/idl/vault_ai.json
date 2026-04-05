@@ -23,6 +23,16 @@
       ]
     },
     {
+      "name": "setAgentAuthority",
+      "accounts": [
+        {"name": "vault", "isMut": true, "isSigner": false},
+        {"name": "authority", "isMut": true, "isSigner": true}
+      ],
+      "args": [
+        {"name": "agentAuthority", "type": "publicKey"}
+      ]
+    },
+    {
       "name": "executeTrade",
       "accounts": [
         {"name": "vault", "isMut": true, "isSigner": false},
@@ -43,6 +53,7 @@
         "kind": "struct",
         "fields": [
           {"name": "owner", "type": "publicKey"},
+          {"name": "agentAuthority", "type": "publicKey"},
           {"name": "totalValue", "type": "u64"},
           {"name": "riskScore", "type": "u8"},
           {"name": "mode", "type": "u8"},

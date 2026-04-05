@@ -16,11 +16,16 @@ app.get('/api/agent/status', (req: Request, res: Response) => {
 });
 
 app.post('/api/agent/start', async (req: Request, res: Response) => {
-  const { intervalMinutes } = req.body ?? {};
+  const { intervalMinutes, vaultOwner } = req.body ?? {};
   const interval = typeof intervalMinutes === 'number' && intervalMinutes > 0 ? intervalMinutes : 1;
 
+  if (typeof vaultOwner !== 'string' || !vaultOwner.trim()) {
+    res.status(400).json({ error: 'vaultOwner is required' });
+    return;
+  }
+
   try {
-    const status = await startAgentSchedule(interval);
+    const status = await startAgentSchedule(interval, vaultOwner);
     res.json(status);
   } catch (error) {
     console.error('Failed to start agent:', (error as any).message || error);

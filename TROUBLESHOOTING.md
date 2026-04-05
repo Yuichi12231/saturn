@@ -58,7 +58,7 @@ solana config get
 solana balance
 
 # Verify program is deployed
-solana program show CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW
+solana program show csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y
 
 # Test backend agent
 curl http://localhost:3001/api/agent/status

@@ -79,7 +79,8 @@ After deployment, update the `PROGRAM_ID` constant in:
 2. **Create Vault** — Click "Create Vault" to initialize your on-chain vault for trading.
 3. **Choose Mode** — Select **Safe Mode** (preserve balance) or **Risk Mode** (active trading).
 4. **Enable Agent** — Toggle "ON" to allow the backend AI agent to execute trades.
-5. **Start Backend Agent** — Click "Start Agent" button to activate market monitoring.
+5. **Set Agent Authority** — Paste backend agent wallet address into "Set Agent Authority" and save.
+6. **Start Backend Agent** — Click "Start Agent" button to activate market monitoring for your vault.
 
 The AI agent will:
 - Monitor Solana market data via CoinGecko, Helius, and BirdEye APIs.
@@ -87,6 +88,11 @@ The AI agent will:
 - Execute buy/sell trades on-chain for SOL, RAY, and ORCA tokens.
 - Update your Vault risk score and holdings on-chain.
 - Respect your mode: Safe = minimal trades, Risk = active trading.
+
+Important for full automation mode:
+- The backend agent signs transactions with its own wallet.
+- Your vault must delegate permission to that wallet via **Set Agent Authority** in the UI.
+- Start Agent sends your connected wallet address as vault owner to backend scheduling.
 
 
 ## Environment variables
@@ -97,6 +103,7 @@ The AI agent uses the following variables:
 - `OPENAI_API_KEY` — OpenAI API key for decision generation
 - `HELIUS_API_KEY` — Helius API key for Solana on-chain signal data
 - `BIRDEYE_API_KEY` — BirdEye API key for broader Solana market and DeFi metrics
+- `VAULT_OWNER` — optional, only for `npm run run-once`; set the owner wallet public key
 
 Do not commit your `.env` file to source control.
 

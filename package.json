@@ -6,6 +6,7 @@
     "ai-agent"
   ],
   "scripts": {
+    "start": "cd app && npm run dev",
     "dev": "cd app && npm run dev",
     "build": "cd app && npm run build",
     "agent": "cd ai-agent && npm run start",

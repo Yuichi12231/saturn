@@ -1,10 +1,17 @@
-import { runAgentOnce } from './agent';
+import { startAgentSchedule, stopAgentSchedule } from './agent';
 
 const intervalMinutes = Number(process.env.AGENT_INTERVAL_MINUTES || 1);
+const vaultOwner = process.env.VAULT_OWNER || '';
 
 async function main() {
-  console.log('Running AI agent one time with interval:', intervalMinutes);
-  const result = await runAgentOnce();
+  if (!vaultOwner) {
+    throw new Error('VAULT_OWNER is required for run-once mode.');
+  }
+
+  console.log('Running AI agent one time for vault owner:', vaultOwner);
+  const status = await startAgentSchedule(intervalMinutes, vaultOwner);
+  const result = status.lastAction;
+  stopAgentSchedule();
   console.log('Agent run result:', result);
 }
 

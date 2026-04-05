@@ -6,7 +6,7 @@ import { Connection, PublicKey, clusterApiUrl } from '@solana/web3.js';
 
 dotenv.config();
 
-const PROGRAM_ID = new PublicKey('CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW');
+const PROGRAM_ID = new PublicKey('csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y');
 const NETWORK = 'devnet';
 const ENDPOINT = clusterApiUrl(NETWORK as any);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -49,6 +49,16 @@ const idl = {
       args: [],
     },
     {
+      name: 'setAgentAuthority',
+      accounts: [
+        { name: 'vault', isMut: true, isSigner: false },
+        { name: 'authority', isMut: true, isSigner: true },
+      ],
+      args: [
+        { name: 'agentAuthority', type: 'publicKey' },
+      ],
+    },
+    {
       name: 'executeTrade',
       accounts: [
         { name: 'vault', isMut: true, isSigner: false },
@@ -65,6 +75,41 @@ const idl = {
 };
 
 const program = new anchor.Program(idl as anchor.Idl, PROGRAM_ID, new anchor.AnchorProvider(connection, new anchor.Wallet(keypair), { preflightCommitment: 'processed' }));
+
+const MIN_LAMPORTS_FOR_TX = 1_000_000;
+
+const ensureAgentHasFunds = async () => {
+  const balance = await connection.getBalance(keypair.publicKey);
+  if (balance < MIN_LAMPORTS_FOR_TX) {
+    const addr = keypair.publicKey.toBase58();
+    throw new Error(
+      `Agent wallet ${addr} has low balance (${(balance / 1e9).toFixed(6)} SOL). ` +
+      `Airdrop on devnet: solana airdrop 2 ${addr} --url devnet`,
+    );
+  }
+};
+
+const deriveVaultPda = async (owner: PublicKey) => {
+  const [vaultPda] = await PublicKey.findProgramAddress(
+    [Buffer.from('vault'), owner.toBuffer()],
+    PROGRAM_ID,
+  );
+
+  return vaultPda;
+};
+
+const ensureVaultExists = async (owner: PublicKey) => {
+  const vaultPda = await deriveVaultPda(owner);
+  const vaultAccount = await connection.getAccountInfo(vaultPda);
+  if (!vaultAccount) {
+    throw new Error(
+      `Vault not found for owner ${owner.toBase58()}. ` +
+      'Connect that wallet in UI and run Create Vault first.',
+    );
+  }
+
+  return vaultPda;
+};
 
 const getMarketData = async () => {
   const response = await axios.get(
@@ -174,15 +219,25 @@ let currentIntervalMinutes = 1;
 let lastAction = 'Agent has not run yet.';
 let lastMessage = 'Ready to run.';
 let running = false;
+let currentVaultOwner: PublicKey | null = null;
 
 export const getAgentState = () => ({
   running,
   intervalMinutes: currentIntervalMinutes,
   lastAction,
   message: lastMessage,
+  agentPublicKey: keypair.publicKey.toBase58(),
+  vaultOwner: currentVaultOwner?.toBase58() || null,
 });
 
 export const runAgentOnce = async () => {
+  if (!currentVaultOwner) {
+    throw new Error('Vault owner is not set. Start the agent from UI with a connected wallet first.');
+  }
+
+  await ensureAgentHasFunds();
+  const vaultPda = await ensureVaultExists(currentVaultOwner);
+
   const market = await getMarketData();
   const heliusSignals = await getHeliusSignals();
   const birdeyeMarket = await getBirdEyeMarket();
@@ -212,11 +267,6 @@ export const runAgentOnce = async () => {
   }
 
   try {
-    const [vaultPda] = await PublicKey.findProgramAddress(
-      [Buffer.from('vault'), keypair.publicKey.toBuffer()],
-      PROGRAM_ID,
-    );
-
     const tx = await program.rpc.executeTrade(
       mint,
       new anchor.BN(amountValue),
@@ -240,13 +290,22 @@ export const runAgentOnce = async () => {
   }
 };
 
-export const startAgentSchedule = async (intervalMinutes: number) => {
+export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: string) => {
   if (scheduledAgent) {
     clearInterval(scheduledAgent);
   }
+
+  let owner: PublicKey;
+  try {
+    owner = new PublicKey(vaultOwner);
+  } catch {
+    throw new Error('Invalid vaultOwner public key');
+  }
+
+  currentVaultOwner = owner;
   currentIntervalMinutes = intervalMinutes;
   running = true;
-  lastMessage = `Agent scheduled every ${intervalMinutes} minute(s).`;
+  lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()}.`;
   await runAgentOnce();
   scheduledAgent = setInterval(async () => {
     try {

@@ -5,7 +5,7 @@ seeds = false
 skip-lint = false
 
 [programs.devnet]
-vault_ai = "CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW"
+vault_ai = "csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y"
 
 [registry]
 url = "https://api.apr.dev"
