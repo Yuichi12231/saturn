@@ -43,6 +43,17 @@ interface VaultState {
   lastUpdated: anchor.BN;
 }
 
+const MIN_LAMPORTS_FOR_TX = 1_000_000;
+
+const extractErrorMessage = (error: unknown): string => {
+  const err = error as any;
+  if (typeof err?.error?.errorMessage === 'string') return err.error.errorMessage;
+  if (typeof err?.error?.message === 'string') return err.error.message;
+  if (typeof err?.message === 'string') return err.message;
+  if (Array.isArray(err?.logs) && err.logs.length > 0) return err.logs.join(' | ');
+  return 'Unknown transaction error';
+};
+
 const AppContent = () => {
   const wallet = useWallet();
   const anchorWallet = useAnchorWallet();
@@ -213,6 +224,13 @@ const AppContent = () => {
     setLoading(true);
     setStatus(`Setting vault mode to ${newMode}...`);
     try {
+      const balance = await connection.getBalance(anchorWallet.publicKey!);
+      if (balance < MIN_LAMPORTS_FOR_TX) {
+        setStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
+        setLoading(false);
+        return;
+      }
+
       const [vaultPda] = await PublicKey.findProgramAddress(
         [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
         PROGRAM_ID,
@@ -230,11 +248,11 @@ const AppContent = () => {
       await fetchVault();
     } catch (error) {
       console.error('Failed to set vault mode:', error);
-      setStatus('Failed to set vault mode');
+      setStatus(`Failed to set vault mode: ${extractErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
-  }, [program, anchorWallet, vault, fetchVault]);
+  }, [program, anchorWallet, vault, fetchVault, connection]);
 
   const setVaultAgentAuthority = useCallback(async (agentAuthorityBase58: string) => {
     if (!program || !anchorWallet || !vault) return false;
@@ -250,6 +268,13 @@ const AppContent = () => {
     setLoading(true);
     setStatus('Syncing agent authority with backend wallet...');
     try {
+      const balance = await connection.getBalance(anchorWallet.publicKey!);
+      if (balance < MIN_LAMPORTS_FOR_TX) {
+        setStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
+        setLoading(false);
+        return false;
+      }
+
       const [vaultPda] = await PublicKey.findProgramAddress(
         [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
         PROGRAM_ID,
@@ -266,12 +291,12 @@ const AppContent = () => {
       return true;
     } catch (error) {
       console.error('Failed to set agent authority:', error);
-      setStatus('Failed to sync agent authority');
+      setStatus(`Failed to sync agent authority: ${extractErrorMessage(error)}`);
       return false;
     } finally {
       setLoading(false);
     }
-  }, [program, anchorWallet, vault, fetchVault]);
+  }, [program, anchorWallet, vault, fetchVault, connection]);
 
   const callAgentApi = useCallback(async (path: string, method = 'GET', body?: any) => {
     if (!agentBackendConfigured) {
