@@ -58,7 +58,6 @@ const AppContent = () => {
   const [backendAgentWallet, setBackendAgentWallet] = useState('');
   const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
-  const [agentAuthorityInput, setAgentAuthorityInput] = useState('');
 
   const AGENT_API_URL = import.meta.env.VITE_AGENT_API_URL || 'http://localhost:3001';
 
@@ -117,7 +116,6 @@ const AppContent = () => {
       });
       setVaultMode(mode);
       setVaultEnabled(account.enabled);
-      setAgentAuthorityInput(account.agentAuthority.toBase58());
       setStatus('Vault loaded');
     } catch (error) {
       console.warn('Vault not found or failed to load', error);
@@ -233,19 +231,19 @@ const AppContent = () => {
     }
   }, [program, anchorWallet, vault, fetchVault]);
 
-  const setVaultAgentAuthority = useCallback(async () => {
-    if (!program || !anchorWallet || !vault) return;
+  const setVaultAgentAuthority = useCallback(async (agentAuthorityBase58: string) => {
+    if (!program || !anchorWallet || !vault) return false;
 
     let agentAuthority: PublicKey;
     try {
-      agentAuthority = new PublicKey(agentAuthorityInput.trim());
+      agentAuthority = new PublicKey(agentAuthorityBase58);
     } catch {
-      setStatus('Invalid agent authority public key');
-      return;
+      setStatus('Backend returned invalid agent authority public key');
+      return false;
     }
 
     setLoading(true);
-    setStatus('Updating agent authority...');
+    setStatus('Syncing agent authority with backend wallet...');
     try {
       const [vaultPda] = await PublicKey.findProgramAddress(
         [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
@@ -259,15 +257,16 @@ const AppContent = () => {
         },
       });
 
-      setStatus('Agent authority updated successfully');
       await fetchVault();
+      return true;
     } catch (error) {
       console.error('Failed to set agent authority:', error);
-      setStatus('Failed to update agent authority');
+      setStatus('Failed to sync agent authority');
+      return false;
     } finally {
       setLoading(false);
     }
-  }, [program, anchorWallet, vault, agentAuthorityInput, fetchVault]);
+  }, [program, anchorWallet, vault, fetchVault]);
 
   const callAgentApi = useCallback(async (path: string, method = 'GET', body?: any) => {
     try {
@@ -307,9 +306,36 @@ const AppContent = () => {
   }, [agentIntervalMinutes, callAgentApi]);
 
   const startRemoteAgent = useCallback(async () => {
-    if (!anchorWallet) {
+    if (!anchorWallet || !program) {
       setAgentStatus('Connect wallet first to select your vault owner address.');
       return;
+    }
+
+    if (!vault) {
+      setStatus('Create vault first before starting the agent.');
+      return;
+    }
+
+    let agentWallet = backendAgentWallet;
+    if (!agentWallet) {
+      const statusResult = await callAgentApi('/api/agent/status');
+      if (statusResult?.agentPublicKey) {
+        agentWallet = statusResult.agentPublicKey;
+        setBackendAgentWallet(statusResult.agentPublicKey);
+      }
+    }
+
+    if (!agentWallet) {
+      setStatus('Unable to read backend agent wallet. Ensure backend is running.');
+      return;
+    }
+
+    if (vault.agentAuthority.toBase58() !== agentWallet) {
+      const synced = await setVaultAgentAuthority(agentWallet);
+      if (!synced) {
+        return;
+      }
+      setStatus('Agent authority synced. Starting agent...');
     }
 
     const result = await callAgentApi('/api/agent/start', 'POST', {
@@ -327,7 +353,7 @@ const AppContent = () => {
         setRecommendation(result.lastAction);
       }
     }
-  }, [agentIntervalMinutes, anchorWallet, callAgentApi]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
@@ -444,25 +470,12 @@ const AppContent = () => {
                     <div style={{ fontSize: '0.9em', color: '#9ca3af' }}>
                       Agent authority for this vault: {vault.agentAuthority.toBase58()}
                     </div>
-                    <input
-                      value={agentAuthorityInput}
-                      onChange={(event) => setAgentAuthorityInput(event.target.value)}
-                      placeholder="Paste backend agent wallet public key"
-                      style={{
-                        padding: '10px',
-                        borderRadius: 10,
-                        border: '1px solid rgba(255,255,255,0.16)',
-                        background: 'rgba(255,255,255,0.06)',
-                        color: '#fff',
-                      }}
-                    />
-                    <button
-                      onClick={setVaultAgentAuthority}
-                      disabled={loading || !agentAuthorityInput.trim()}
-                      style={{ background: '#0ea5e9', color: '#fff' }}
-                    >
-                      Set Agent Authority
-                    </button>
+                    <div style={{ fontSize: '0.9em', color: '#9ca3af' }}>
+                      Backend agent wallet: {backendAgentWallet || 'Waiting for backend status...'}
+                    </div>
+                    <div style={{ fontSize: '0.85em', color: '#cbd5e1' }}>
+                      Authority sync is automatic when you press Start Agent.
+                    </div>
                   </div>
                 </div>
                 <div style={{ marginTop: 16 }}>
