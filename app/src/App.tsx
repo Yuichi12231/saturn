@@ -524,7 +524,7 @@ const AppContent = () => {
                         type="radio"
                         name="vaultMode"
                         value="safe"
-                        checked={vaultMode === 'safe'}
+                        checked={pendingVaultMode === 'safe'}
                         disabled={loading || !walletMatchesVaultOwner}
                         onChange={() => setPendingVaultMode('safe')}
                       />
@@ -535,12 +535,16 @@ const AppContent = () => {
                         type="radio"
                         name="vaultMode"
                         value="risk"
-                        checked={vaultMode === 'risk'}
+                        checked={pendingVaultMode === 'risk'}
                         disabled={loading || !walletMatchesVaultOwner}
                         onChange={() => setPendingVaultMode('risk')}
                       />
                       Risk Mode
                     </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: '0.85em', color: '#cbd5e1', marginBottom: 8 }}>
+                    <span>Selected mode: {pendingVaultMode}</span>
+                    <span>Current mode: {vaultMode}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                     <span>Agent Enabled:</span>
