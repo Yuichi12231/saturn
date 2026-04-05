@@ -48,22 +48,35 @@ interface AgentHealth {
   agentPublicKey?: string;
   agentBalanceSol?: number;
   env?: {
-    openaiConfigured?: boolean;
+    openrouterConfigured?: boolean;
+    openrouterModel?: string;
     heliusConfigured?: boolean;
     birdeyeConfigured?: boolean;
     walletConfigured?: boolean;
   };
   checks?: {
-    openai?: string;
+    openrouter?: string;
     helius?: string;
     birdeye?: string;
   };
   errors?: {
-    openai?: string | null;
+    openrouter?: string | null;
     helius?: string | null;
     birdeye?: string | null;
   };
   lastError?: string | null;
+}
+
+interface AgentTrade {
+  ts: string;
+  action: 'buy' | 'sell' | 'hold' | 'error';
+  symbol: string;
+  amount: number;
+  riskScore: number;
+  source: 'llm' | 'rule' | 'system';
+  reason: string;
+  tx?: string;
+  status: 'planned' | 'executed' | 'failed' | 'skipped';
 }
 
 interface TraderAnalytics {
@@ -122,6 +135,8 @@ const AppContent = () => {
   const [depositSolInput, setDepositSolInput] = useState('0.1');
   const [withdrawSolInput, setWithdrawSolInput] = useState('0.1');
   const [agentHealth, setAgentHealth] = useState<AgentHealth | null>(null);
+  const [agentTrades, setAgentTrades] = useState<AgentTrade[]>([]);
+  const [agentStrategy, setAgentStrategy] = useState<'auto' | 'llm' | 'rule'>('auto');
   const [marketAnalytics, setMarketAnalytics] = useState<TraderAnalytics | null>(null);
   const [marketSource, setMarketSource] = useState('loading');
   const [marketError, setMarketError] = useState('');
@@ -688,6 +703,13 @@ const AppContent = () => {
     }
   }, [callAgentApi]);
 
+  const refreshAgentTrades = useCallback(async () => {
+    const result = await callAgentApi('/api/agent/trades');
+    if (result?.trades && Array.isArray(result.trades)) {
+      setAgentTrades(result.trades as AgentTrade[]);
+    }
+  }, [callAgentApi]);
+
   const startRemoteAgent = useCallback(async () => {
     if (!anchorWallet || !program) {
       setAgentStatus('Connect wallet first to select your vault owner address.');
@@ -738,6 +760,7 @@ const AppContent = () => {
     const result = await callAgentApi('/api/agent/start', 'POST', {
       intervalMinutes: agentIntervalMinutes,
       vaultOwner: anchorWallet.publicKey.toBase58(),
+      strategy: agentStrategy,
     });
     if (result) {
       setAgentRunning(result.running);
@@ -749,8 +772,9 @@ const AppContent = () => {
       if (result.lastAction) {
         setRecommendation(result.lastAction);
       }
+      await refreshAgentTrades();
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, agentStrategy, refreshAgentTrades]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
@@ -766,16 +790,18 @@ const AppContent = () => {
   useEffect(() => {
     refreshAgentStatus();
     refreshAgentHealth();
-  }, [refreshAgentStatus, refreshAgentHealth]);
+    refreshAgentTrades();
+  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
 
   useEffect(() => {
     const interval = setInterval(() => {
       refreshAgentStatus();
       refreshAgentHealth();
+      refreshAgentTrades();
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [refreshAgentStatus, refreshAgentHealth]);
+  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
 
   useEffect(() => {
     fetchMarketData();
@@ -1088,6 +1114,18 @@ const AppContent = () => {
               <option value={10}>10 minutes</option>
             </select>
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            Strategy:
+            <select
+              value={agentStrategy}
+              onChange={(event) => setAgentStrategy(event.target.value as 'auto' | 'llm' | 'rule')}
+              style={{ padding: '10px', borderRadius: 12, background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.12)' }}
+            >
+              <option value="auto">Auto (LLM + Rule fallback)</option>
+              <option value="rule">Rule only</option>
+              <option value="llm">LLM only</option>
+            </select>
+          </label>
         </div>
         <p>{recommendation}</p>
         <p>Agent status is controlled from this page and runs on your backend service.</p>
@@ -1095,6 +1133,7 @@ const AppContent = () => {
           onClick={() => {
             refreshAgentStatus();
             refreshAgentHealth();
+            refreshAgentTrades();
           }}
           style={{ background: '#334155', color: '#fff', marginBottom: 12 }}
         >
@@ -1105,15 +1144,43 @@ const AppContent = () => {
           {'\n'}Status: {agentStatus}
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
-          {'\n'}OpenAI: {agentHealth?.checks?.openai || 'unknown'}
+          {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
+          {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
           {'\n'}BirdEye: {agentHealth?.checks?.birdeye || 'unknown'}
           {'\n'}Agent SOL: {typeof agentHealth?.agentBalanceSol === 'number' ? agentHealth.agentBalanceSol.toFixed(4) : 'unknown'}
         </pre>
-        {(agentHealth?.errors?.openai || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.lastError) && (
+        <h3 style={{ marginTop: 18 }}>Recent Agent Trades</h3>
+        {agentTrades.length === 0 ? (
+          <p style={{ color: '#9ca3af' }}>No trade history yet. Start agent to see autonomous decisions.</p>
+        ) : (
+          <div style={{ display: 'grid', gap: 8 }}>
+            {agentTrades.slice(0, 8).map((trade) => (
+              <div key={`${trade.ts}-${trade.action}-${trade.symbol}-${trade.amount}`} style={{
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: 12,
+                padding: 10,
+                background: 'rgba(255,255,255,0.03)',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <strong style={{
+                    color: trade.action === 'buy' ? '#22c55e' : trade.action === 'sell' ? '#ef4444' : trade.action === 'error' ? '#f59e0b' : '#9ca3af',
+                  }}>
+                    {trade.action.toUpperCase()} {trade.symbol} x{trade.amount}
+                  </strong>
+                  <span style={{ color: '#9ca3af', fontSize: '0.9em' }}>{new Date(trade.ts).toLocaleTimeString()}</span>
+                </div>
+                <div style={{ color: '#cbd5e1', fontSize: '0.9em' }}>Source: {trade.source} | Risk: {trade.riskScore} | Status: {trade.status}</div>
+                <div className="long-value" style={{ color: '#9ca3af', fontSize: '0.88em' }}>{trade.reason}</div>
+                {trade.tx && <div className="long-value" style={{ color: '#60a5fa', fontSize: '0.82em' }}>Tx: {trade.tx}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.lastError) && (
           <div style={{ marginTop: 10, color: '#f59e0b' }}>
             <div>API diagnostics:</div>
-            {agentHealth?.errors?.openai && <div>OpenAI error: {agentHealth.errors.openai}</div>}
+            {agentHealth?.errors?.openrouter && <div>OpenRouter error: {agentHealth.errors.openrouter}</div>}
             {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
             {agentHealth?.errors?.birdeye && <div>BirdEye error: {agentHealth.errors.birdeye}</div>}
             {agentHealth?.lastError && <div>Last agent run error: {agentHealth.lastError}</div>}

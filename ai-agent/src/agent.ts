@@ -13,8 +13,11 @@ const ENDPOINT = (
   || process.env.ALCHEMY_RPC_URL
   || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8'
 ).trim();
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3-32b:free';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_SITE_URL = process.env.OPENROUTER_SITE_URL || process.env.APP_BASE_URL || 'https://saturn.local';
+const OPENROUTER_APP_NAME = process.env.OPENROUTER_APP_NAME || 'Saturn Vault AI';
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const SECRET_KEY = process.env.AGENT_WALLET_SECRET_KEY;
@@ -178,17 +181,17 @@ const getBirdEyeMarket = async () => {
   }
 };
 
-const askOpenAI = async (prompt: string) => {
-  if (!OPENAI_API_KEY) {
-    openAiError = 'OPENAI_API_KEY is not configured';
-    return { action: 'hold', reason: 'OpenAI API key is not configured.' };
+const askLlm = async (prompt: string) => {
+  if (!OPENROUTER_API_KEY) {
+    openRouterError = 'OPENROUTER_API_KEY is not configured';
+    return { action: 'hold', reason: 'OpenRouter API key is not configured.' };
   }
 
   try {
     const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
+      OPENROUTER_BASE_URL,
       {
-        model: OPENAI_MODEL,
+        model: OPENROUTER_MODEL,
         messages: [
           {
             role: 'system',
@@ -205,8 +208,10 @@ const askOpenAI = async (prompt: string) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
+          'HTTP-Referer': OPENROUTER_SITE_URL,
+          'X-Title': OPENROUTER_APP_NAME,
         },
         timeout: 20000,
       },
@@ -214,10 +219,10 @@ const askOpenAI = async (prompt: string) => {
 
     const text = response.data?.choices?.[0]?.message?.content;
     if (!text) {
-      throw new Error('OpenAI did not return a response.');
+      throw new Error('OpenRouter did not return a response.');
     }
 
-    openAiError = null;
+    openRouterError = null;
 
     try {
       return JSON.parse(text.replace(/\n/g, ' ').trim());
@@ -226,9 +231,9 @@ const askOpenAI = async (prompt: string) => {
     }
   } catch (error) {
     const axiosError = error as any;
-    openAiError = String(axiosError.response?.data?.error?.message || axiosError.response?.data || axiosError.message || 'OpenAI request failed');
-    console.warn('OpenAI request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
-    return { action: 'hold', reason: 'OpenAI request failed.' };
+    openRouterError = String(axiosError.response?.data?.error?.message || axiosError.response?.data || axiosError.message || 'OpenRouter request failed');
+    console.warn('OpenRouter request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
+    return { action: 'hold', reason: 'OpenRouter request failed.' };
   }
 };
 
@@ -244,6 +249,29 @@ const symbolToMint: Record<string, string> = {
   SOL: 'So11111111111111111111111111111111111111112',
 };
 
+type TradingStrategy = 'auto' | 'llm' | 'rule';
+
+interface Decision {
+  action: 'buy' | 'sell' | 'hold';
+  symbol: 'SOL' | 'RAY' | 'ORCA';
+  amount: number;
+  riskScore: number;
+  reason: string;
+  source: 'llm' | 'rule';
+}
+
+interface TradeRecord {
+  ts: string;
+  action: 'buy' | 'sell' | 'hold' | 'error';
+  symbol: string;
+  amount: number;
+  riskScore: number;
+  source: 'llm' | 'rule' | 'system';
+  reason: string;
+  tx?: string;
+  status: 'planned' | 'executed' | 'failed' | 'skipped';
+}
+
 let scheduledAgent: ReturnType<typeof setInterval> | null = null;
 let currentIntervalMinutes = 1;
 let lastAction = 'Agent has not run yet.';
@@ -251,24 +279,123 @@ let lastMessage = 'Ready to run.';
 let running = false;
 let currentVaultOwner: PublicKey | null = null;
 let lastError: string | null = null;
-let openAiError: string | null = null;
+let openRouterError: string | null = null;
 let heliusError: string | null = null;
 let birdeyeError: string | null = null;
+let strategy: TradingStrategy = 'auto';
+const tradeHistory: TradeRecord[] = [];
+
+const pushTradeRecord = (record: TradeRecord) => {
+  tradeHistory.unshift(record);
+  if (tradeHistory.length > 100) {
+    tradeHistory.length = 100;
+  }
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const decideWithRules = (market: any): Decision => {
+  const entries = [
+    { symbol: 'SOL' as const, change: Number(market?.solana?.usd_24hr_change ?? 0) },
+    { symbol: 'RAY' as const, change: Number(market?.raydium?.usd_24hr_change ?? 0) },
+    { symbol: 'ORCA' as const, change: Number(market?.orca?.usd_24hr_change ?? 0) },
+  ];
+
+  const valid = entries.filter((entry) => Number.isFinite(entry.change));
+  if (valid.length === 0) {
+    return {
+      action: 'hold',
+      symbol: 'SOL',
+      amount: 0,
+      riskScore: 50,
+      reason: 'No valid market change data available.',
+      source: 'rule',
+    };
+  }
+
+  const best = [...valid].sort((a, b) => b.change - a.change)[0];
+  const worst = [...valid].sort((a, b) => a.change - b.change)[0];
+
+  if (best.change >= 1.0) {
+    return {
+      action: 'buy',
+      symbol: best.symbol,
+      amount: clamp(Math.round(best.change), 1, 10),
+      riskScore: clamp(Math.round(52 + best.change * 4), 40, 85),
+      reason: `Rule momentum buy: ${best.symbol} 24h change ${best.change.toFixed(2)}% is strongest.`,
+      source: 'rule',
+    };
+  }
+
+  if (worst.change <= -2.0) {
+    return {
+      action: 'sell',
+      symbol: worst.symbol,
+      amount: clamp(Math.round(Math.abs(worst.change)), 1, 10),
+      riskScore: clamp(Math.round(60 + Math.abs(worst.change) * 3), 45, 90),
+      reason: `Rule risk-reduction sell: ${worst.symbol} dropped ${worst.change.toFixed(2)}% in 24h.`,
+      source: 'rule',
+    };
+  }
+
+  return {
+    action: 'hold',
+    symbol: 'SOL',
+    amount: 0,
+    riskScore: 50,
+    reason: 'Rule engine: no strong edge, staying in hold.',
+    source: 'rule',
+  };
+};
+
+const decideWithLlm = async (market: any, heliusSignals: any, birdeyeMarket: any): Promise<Decision | null> => {
+  const prompt = buildPrompt(market, heliusSignals, birdeyeMarket);
+  const decision = await askLlm(prompt);
+
+  const action = typeof decision.action === 'string' && ['buy', 'sell', 'hold'].includes(decision.action.toLowerCase())
+    ? decision.action.toLowerCase() as 'buy' | 'sell' | 'hold'
+    : 'hold';
+  const symbol = typeof decision.symbol === 'string' ? decision.symbol.toUpperCase() : 'SOL';
+  if (!['SOL', 'RAY', 'ORCA'].includes(symbol)) {
+    return null;
+  }
+
+  const amount = clamp(Number(decision.amount) || 1, 0, 10);
+  const riskScore = clamp(Number(decision.riskScore) || 50, 1, 99);
+  const reason = String(decision.reason || 'No reason provided.');
+
+  if (!Number.isFinite(amount) || !Number.isFinite(riskScore)) {
+    return null;
+  }
+
+  return {
+    action,
+    symbol: symbol as 'SOL' | 'RAY' | 'ORCA',
+    amount,
+    riskScore,
+    reason,
+    source: 'llm',
+  };
+};
 
 export const getAgentState = () => ({
   running,
   intervalMinutes: currentIntervalMinutes,
+  strategy,
   lastAction,
   message: lastMessage,
   lastError,
   agentPublicKey: keypair.publicKey.toBase58(),
   vaultOwner: currentVaultOwner?.toBase58() || null,
+  tradeHistory: tradeHistory.slice(0, 20),
 });
+
+export const getTradeHistory = () => tradeHistory.slice(0, 50);
 
 export const getAgentHealth = async () => {
   const balanceLamports = await connection.getBalance(keypair.publicKey);
 
-  const openaiStatus = !OPENAI_API_KEY ? 'not_configured' : openAiError ? 'error' : 'configured';
+  const openrouterStatus = !OPENROUTER_API_KEY ? 'not_configured' : openRouterError ? 'error' : 'configured';
   const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
   const birdeyeStatus = !BIRDEYE_API_KEY ? 'not_configured' : birdeyeError ? 'error' : 'configured';
 
@@ -279,18 +406,19 @@ export const getAgentHealth = async () => {
     agentPublicKey: keypair.publicKey.toBase58(),
     agentBalanceSol: balanceLamports / 1e9,
     env: {
-      openaiConfigured: Boolean(OPENAI_API_KEY),
+      openrouterConfigured: Boolean(OPENROUTER_API_KEY),
+      openrouterModel: OPENROUTER_MODEL,
       heliusConfigured: Boolean(HELIUS_API_KEY),
       birdeyeConfigured: Boolean(BIRDEYE_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
     },
     checks: {
-      openai: openaiStatus,
+      openrouter: openrouterStatus,
       helius: heliusStatus,
       birdeye: birdeyeStatus,
     },
     errors: {
-      openai: openAiError,
+      openrouter: openRouterError,
       helius: heliusError,
       birdeye: birdeyeError,
     },
@@ -311,25 +439,39 @@ export const runAgentOnce = async () => {
   const heliusSignals = await getHeliusSignals();
   const birdeyeMarket = await getBirdEyeMarket();
 
-  const prompt = buildPrompt(market, heliusSignals, birdeyeMarket);
-  const decision = await askOpenAI(prompt);
+  let chosen: Decision | null = null;
+  if (strategy === 'llm' || strategy === 'auto') {
+    chosen = await decideWithLlm(market, heliusSignals, birdeyeMarket);
+  }
+  if (!chosen || strategy === 'rule') {
+    chosen = decideWithRules(market);
+  }
 
-  const action = typeof decision.action === 'string' && ['buy', 'sell'].includes(decision.action.toLowerCase())
-    ? decision.action.toLowerCase()
-    : 'hold';
-  const symbol = typeof decision.symbol === 'string' ? decision.symbol.toUpperCase() : 'SOL';
-  const amountValue = Number(decision.amount) || 1;
-  const newRiskScore = Number(decision.riskScore) || 50;
-  const reason = String(decision.reason || 'No reason provided.');
+  const action = chosen.action;
+  const symbol = chosen.symbol;
+  const amountValue = chosen.amount;
+  const newRiskScore = chosen.riskScore;
+  const reason = chosen.reason;
 
   let mint = new PublicKey(symbolToMint.SOL);
   if (symbolToMint[symbol]) {
     mint = new PublicKey(symbolToMint[symbol]);
   }
 
-  let message = `AI decision: ${action.toUpperCase()} ${symbol} amount ${amountValue} risk ${newRiskScore}. Reason: ${reason}`;
+  let message = `AI decision (${chosen.source}): ${action.toUpperCase()} ${symbol} amount ${amountValue} risk ${newRiskScore}. Reason: ${reason}`;
   lastAction = message;
   lastMessage = `Market snapshot available, AI decision prepared.`;
+
+  pushTradeRecord({
+    ts: new Date().toISOString(),
+    action,
+    symbol,
+    amount: amountValue,
+    riskScore: newRiskScore,
+    source: chosen.source,
+    reason,
+    status: action === 'hold' ? 'skipped' : 'planned',
+  });
 
   if (action === 'hold') {
     return { action, message };
@@ -350,16 +492,37 @@ export const runAgentOnce = async () => {
     );
 
     lastMessage = `${message} Transaction: ${tx}`;
+    pushTradeRecord({
+      ts: new Date().toISOString(),
+      action,
+      symbol,
+      amount: amountValue,
+      riskScore: newRiskScore,
+      source: chosen.source,
+      reason,
+      tx,
+      status: 'executed',
+    });
     return { action, message, tx };
   } catch (error) {
     const errorMessage = (error as any)?.message || 'Transaction failed';
     lastMessage = `Failed to execute trade: ${errorMessage}`;
     console.error('Trade execution failed:', errorMessage);
+    pushTradeRecord({
+      ts: new Date().toISOString(),
+      action: 'error',
+      symbol,
+      amount: amountValue,
+      riskScore: newRiskScore,
+      source: chosen.source,
+      reason: errorMessage,
+      status: 'failed',
+    });
     return { action: 'error', message: errorMessage };
   }
 };
 
-export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: string) => {
+export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: string, requestedStrategy: TradingStrategy = 'auto') => {
   if (scheduledAgent) {
     clearInterval(scheduledAgent);
   }
@@ -372,9 +535,10 @@ export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: st
   }
 
   currentVaultOwner = owner;
+  strategy = requestedStrategy;
   currentIntervalMinutes = intervalMinutes;
   running = true;
-  lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()}.`;
+  lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()} (strategy: ${strategy}).`;
   try {
     await runAgentOnce();
   } catch (error) {
