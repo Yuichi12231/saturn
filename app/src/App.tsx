@@ -90,6 +90,11 @@ const AppContent = () => {
     return provider ? new Program(idl as Idl, PROGRAM_ID, provider) : null;
   }, [provider]);
 
+  const walletMatchesVaultOwner = useMemo(() => {
+    if (!vault || !anchorWallet) return false;
+    return vault.owner.toBase58() === anchorWallet.publicKey!.toBase58();
+  }, [vault, anchorWallet]);
+
   const fetchMarketData = useCallback(async () => {
     try {
       const response = await fetch(
@@ -231,6 +236,12 @@ const AppContent = () => {
 
   const toggleVaultMode = useCallback(async (newMode: 'safe' | 'risk', enabled: boolean) => {
     if (!program || !anchorWallet || !vault) return;
+
+    if (vault.owner.toBase58() !== anchorWallet.publicKey!.toBase58()) {
+      setStatus('Connected wallet is not the vault owner. Reconnect Phantom with the vault owner wallet.');
+      return;
+    }
+
     setLoading(true);
     setStatus(`Setting vault mode to ${newMode}...`);
     try {
@@ -266,6 +277,11 @@ const AppContent = () => {
 
   const setVaultAgentAuthority = useCallback(async (agentAuthorityBase58: string) => {
     if (!program || !anchorWallet || !vault) return false;
+
+    if (vault.owner.toBase58() !== anchorWallet.publicKey!.toBase58()) {
+      setStatus('Connected wallet is not the vault owner. Reconnect Phantom with the vault owner wallet.');
+      return false;
+    }
 
     let agentAuthority: PublicKey;
     try {
@@ -500,6 +516,7 @@ const AppContent = () => {
                         name="vaultMode"
                         value="safe"
                         checked={vaultMode === 'safe'}
+                        disabled={loading || !walletMatchesVaultOwner}
                         onChange={() => toggleVaultMode('safe', vaultEnabled)}
                       />
                       Safe Mode
@@ -510,6 +527,7 @@ const AppContent = () => {
                         name="vaultMode"
                         value="risk"
                         checked={vaultMode === 'risk'}
+                        disabled={loading || !walletMatchesVaultOwner}
                         onChange={() => toggleVaultMode('risk', vaultEnabled)}
                       />
                       Risk Mode
@@ -519,6 +537,7 @@ const AppContent = () => {
                     <span>Agent Enabled:</span>
                     <button
                       onClick={() => toggleVaultMode(vaultMode, !vaultEnabled)}
+                      disabled={loading || !walletMatchesVaultOwner}
                       style={{
                         background: vaultEnabled ? '#16a34a' : '#7c3aed',
                         color: '#fff',
@@ -631,6 +650,9 @@ const AppContent = () => {
           <div>Network: Devnet</div>
           <div>Program: {PROGRAM_ID.toBase58().slice(0, 12)}...</div>
           <div>Wallet: {wallet.connected ? anchorWallet?.publicKey?.toBase58().slice(0, 12) + '...' : 'Not connected'}</div>
+          {vault && (
+            <div>Vault owner: {vault.owner.toBase58().slice(0, 12)}... {walletMatchesVaultOwner ? '(match)' : '(mismatch)'}</div>
+          )}
           {wallet.connected && anchorWallet && (
             <div 
               style={{ cursor: 'pointer', marginTop: 8 }}
