@@ -202,6 +202,16 @@ const AppContent = () => {
     } catch (error) {
       const err = error as any;
       console.error('Vault creation error:', err);
+
+      const rawMessage = String(err?.message || '');
+      const rawLogs = Array.isArray(err?.logs) ? err.logs.join(' | ') : '';
+      const combined = `${rawMessage} ${rawLogs}`;
+
+      if (/already in use|allocate: account address .* already in use/i.test(combined)) {
+        setStatus('Vault already exists for this wallet. Loading current vault state...');
+        await fetchVault();
+        return;
+      }
       
       let errorMsg = 'Failed to create vault';
       if (err.error?.message) {
