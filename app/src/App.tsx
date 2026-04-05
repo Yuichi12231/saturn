@@ -422,6 +422,10 @@ const AppContent = () => {
       setStatus('Agent authority synced. Starting agent...');
     }
 
+    if (!vaultEnabled) {
+      await toggleVaultMode(vaultMode, true);
+    }
+
     const result = await callAgentApi('/api/agent/start', 'POST', {
       intervalMinutes: agentIntervalMinutes,
       vaultOwner: anchorWallet.publicKey.toBase58(),
@@ -437,15 +441,18 @@ const AppContent = () => {
         setRecommendation(result.lastAction);
       }
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
     if (result) {
       setAgentRunning(result.running);
       setAgentStatus(result.message);
+      if (vaultEnabled) {
+        await toggleVaultMode(vaultMode, false);
+      }
     }
-  }, [callAgentApi]);
+  }, [callAgentApi, vaultEnabled, toggleVaultMode, vaultMode]);
 
   useEffect(() => {
     refreshAgentStatus();
@@ -535,23 +542,15 @@ const AppContent = () => {
                   </div>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                     <span>Agent Enabled:</span>
-                    <button
-                      onClick={() => toggleVaultMode(vaultMode, !vaultEnabled)}
-                      disabled={loading || !walletMatchesVaultOwner}
-                      style={{
-                        background: vaultEnabled ? '#16a34a' : '#7c3aed',
-                        color: '#fff',
-                        border: 'none',
-                        padding: '8px 16px',
-                        borderRadius: 8,
-                        cursor: 'pointer',
-                      }}
-                    >
+                    <strong style={{ color: vaultEnabled ? '#16a34a' : '#9ca3af' }}>
                       {vaultEnabled ? 'ON' : 'OFF'}
-                    </button>
+                    </strong>
                     <span style={{ fontSize: '0.9em', color: '#9ca3af' }}>
                       {vaultMode === 'safe' ? '🛡️ Preserve balance' : '⚡ Active trading'}
                     </span>
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: '0.85em', color: '#cbd5e1' }}>
+                    Enabled state is controlled automatically by Start/Stop Agent.
                   </div>
                   <div style={{ marginTop: 14, display: 'grid', gap: 8 }}>
                     <div style={{ fontSize: '0.9em', color: '#9ca3af' }}>
