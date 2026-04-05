@@ -86,14 +86,24 @@ const getCoinGeckoData = async () => {
 
 const getHeliusSignals = async () => {
   try {
-    const url = `https://api.helius.xyz/v0/addresses/transactions?api-key=${HELIUS_API_KEY}`;
-    const response = await axios.post(url, {
-      addresses: [keypair.publicKey.toBase58()],
-      limit: 5,
-    });
+    const url = 'https://api.helius.xyz/v0/addresses/transactions';
+    const response = await axios.post(
+      url,
+      {
+        addresses: [keypair.publicKey.toBase58()],
+        limit: 5,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': HELIUS_API_KEY,
+        },
+      },
+    );
     return response.data;
   } catch (error) {
-    console.warn('Helius API request failed:', (error as any).message || error);
+    const axiosError = error as any;
+    console.warn('Helius API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
 };
@@ -107,47 +117,54 @@ const getBirdEyeMarket = async () => {
     });
     return response.data;
   } catch (error) {
-    console.warn('BirdEye API request failed:', (error as any).message || error);
+    const axiosError = error as any;
+    console.warn('BirdEye API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
 };
 
 const askOpenAI = async (prompt: string) => {
-  const response = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are an AI asset manager for a Solana Vault. Analyze market data, on-chain signals, and risk. Respond with JSON only.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      max_tokens: 220,
-      temperature: 0.3,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    },
-  );
-
-  const text = response.data?.choices?.[0]?.message?.content;
-  if (!text) {
-    throw new Error('OpenAI did not return a response.');
-  }
-
   try {
-    return JSON.parse(text.replace(/\n/g, ' ').trim());
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are an AI asset manager for a Solana Vault. Analyze market data, on-chain signals, and risk. Respond with JSON only.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        max_tokens: 220,
+        temperature: 0.3,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    const text = response.data?.choices?.[0]?.message?.content;
+    if (!text) {
+      throw new Error('OpenAI did not return a response.');
+    }
+
+    try {
+      return JSON.parse(text.replace(/\n/g, ' ').trim());
+    } catch (error) {
+      return { text };
+    }
   } catch (error) {
-    return { text };
+    const axiosError = error as any;
+    console.warn('OpenAI request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
+    throw error;
   }
 };
 
