@@ -59,9 +59,10 @@ const AppContent = () => {
   const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
 
-  const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || '').trim();
+  const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || (runningLocalFrontend ? 'http://localhost:3001' : '')).trim();
   const agentBackendConfigured = AGENT_API_URL.length > 0;
-  const runningHostedFrontend = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const runningHostedFrontend = !runningLocalFrontend;
   const backendLooksLocalhost = AGENT_API_URL.includes('localhost') || AGENT_API_URL.includes('127.0.0.1');
   const backendUrlMismatch = runningHostedFrontend && backendLooksLocalhost;
 
