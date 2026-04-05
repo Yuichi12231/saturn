@@ -35,6 +35,7 @@ interface TokenHolding {
 interface VaultState {
   owner: PublicKey;
   agentAuthority: PublicKey;
+  vaultSolBalance: anchor.BN;
   totalValue: anchor.BN;
   riskScore: number;
   mode: number;
@@ -70,6 +71,8 @@ const AppContent = () => {
   const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
   const [pendingVaultMode, setPendingVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
+  const [depositSolInput, setDepositSolInput] = useState('0.1');
+  const [withdrawSolInput, setWithdrawSolInput] = useState('0.1');
 
   const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || (runningLocalFrontend ? 'http://localhost:3001' : '')).trim();
@@ -125,6 +128,7 @@ const AppContent = () => {
       setVault({
         owner: account.owner,
         agentAuthority: account.agentAuthority,
+        vaultSolBalance: account.vaultSolBalance,
         totalValue: account.totalValue,
         riskScore: account.riskScore,
         mode: account.mode,
@@ -276,6 +280,93 @@ const AppContent = () => {
       setLoading(false);
     }
   }, [program, anchorWallet, vault, fetchVault, connection]);
+
+  const depositSol = useCallback(async () => {
+    if (!program || !anchorWallet || !vault) return;
+    if (!walletMatchesVaultOwner) {
+      setStatus('Connected wallet is not the vault owner. Reconnect Phantom with the vault owner wallet.');
+      return;
+    }
+
+    const amountSol = Number(depositSolInput);
+    if (!Number.isFinite(amountSol) || amountSol <= 0) {
+      setStatus('Enter a valid SOL amount to deposit.');
+      return;
+    }
+
+    const amountLamports = Math.floor(amountSol * 1e9);
+    if (amountLamports <= 0) {
+      setStatus('Deposit amount is too small.');
+      return;
+    }
+
+    setLoading(true);
+    setStatus(`Depositing ${amountSol} SOL to vault...`);
+    try {
+      const [vaultPda] = await PublicKey.findProgramAddress(
+        [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      await program.rpc.depositSol(new anchor.BN(amountLamports), {
+        accounts: {
+          vault: vaultPda,
+          authority: anchorWallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        },
+      });
+
+      setStatus(`Deposited ${amountSol} SOL to vault.`);
+      await fetchVault();
+    } catch (error) {
+      setStatus(`Failed to deposit SOL: ${extractErrorMessage(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [program, anchorWallet, vault, walletMatchesVaultOwner, depositSolInput, fetchVault]);
+
+  const withdrawSol = useCallback(async () => {
+    if (!program || !anchorWallet || !vault) return;
+    if (!walletMatchesVaultOwner) {
+      setStatus('Connected wallet is not the vault owner. Reconnect Phantom with the vault owner wallet.');
+      return;
+    }
+
+    const amountSol = Number(withdrawSolInput);
+    if (!Number.isFinite(amountSol) || amountSol <= 0) {
+      setStatus('Enter a valid SOL amount to withdraw.');
+      return;
+    }
+
+    const amountLamports = Math.floor(amountSol * 1e9);
+    if (amountLamports <= 0) {
+      setStatus('Withdraw amount is too small.');
+      return;
+    }
+
+    setLoading(true);
+    setStatus(`Withdrawing ${amountSol} SOL from vault...`);
+    try {
+      const [vaultPda] = await PublicKey.findProgramAddress(
+        [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      await program.rpc.withdrawSol(new anchor.BN(amountLamports), {
+        accounts: {
+          vault: vaultPda,
+          authority: anchorWallet.publicKey,
+        },
+      });
+
+      setStatus(`Withdrew ${amountSol} SOL from vault.`);
+      await fetchVault();
+    } catch (error) {
+      setStatus(`Failed to withdraw SOL: ${extractErrorMessage(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [program, anchorWallet, vault, walletMatchesVaultOwner, withdrawSolInput, fetchVault]);
 
   const setVaultAgentAuthority = useCallback(async (agentAuthorityBase58: string) => {
     if (!program || !anchorWallet || !vault) return false;
@@ -509,6 +600,10 @@ const AppContent = () => {
                   <strong>{vault.totalValue.toString()}</strong>
                 </div>
                 <div className="metric">
+                  <span>Vault SOL balance</span>
+                  <strong>{(vault.vaultSolBalance.toNumber() / 1e9).toFixed(6)} SOL</strong>
+                </div>
+                <div className="metric">
                   <span>Risk score</span>
                   <strong>{vault.riskScore}%</strong>
                 </div>
@@ -578,6 +673,54 @@ const AppContent = () => {
                   </div>
                 </div>
                 <div style={{ marginTop: 16 }}>
+                  <h3>Vault Funds (SOL)</h3>
+                  <div style={{ display: 'grid', gap: 10, marginBottom: 16 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        value={depositSolInput}
+                        onChange={(event) => setDepositSolInput(event.target.value)}
+                        placeholder="Amount SOL"
+                        style={{
+                          padding: '10px',
+                          borderRadius: 10,
+                          border: '1px solid rgba(255,255,255,0.16)',
+                          background: 'rgba(255,255,255,0.06)',
+                          color: '#fff',
+                          minWidth: 130,
+                        }}
+                      />
+                      <button
+                        onClick={depositSol}
+                        disabled={loading || !walletMatchesVaultOwner}
+                        style={{ background: '#16a34a', color: '#fff' }}
+                      >
+                        Deposit SOL
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        value={withdrawSolInput}
+                        onChange={(event) => setWithdrawSolInput(event.target.value)}
+                        placeholder="Amount SOL"
+                        style={{
+                          padding: '10px',
+                          borderRadius: 10,
+                          border: '1px solid rgba(255,255,255,0.16)',
+                          background: 'rgba(255,255,255,0.06)',
+                          color: '#fff',
+                          minWidth: 130,
+                        }}
+                      />
+                      <button
+                        onClick={withdrawSol}
+                        disabled={loading || !walletMatchesVaultOwner}
+                        style={{ background: '#dc2626', color: '#fff' }}
+                      >
+                        Withdraw SOL
+                      </button>
+                    </div>
+                  </div>
+
                   <h3>Holdings</h3>
                   {vault.holdings.length === 0 ? (
                     <p>Vault has no token positions yet.</p>

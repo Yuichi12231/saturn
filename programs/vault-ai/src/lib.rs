@@ -10,6 +10,7 @@ pub mod vault_ai {
         let vault = &mut ctx.accounts.vault;
         vault.owner = *ctx.accounts.authority.key;
         vault.agent_authority = *ctx.accounts.authority.key;
+        vault.vault_sol_balance = 0;
         vault.total_value = 0;
         vault.risk_score = 50;
         vault.mode = VaultMode::Safe as u8;
@@ -33,6 +34,64 @@ pub mod vault_ai {
         require!(mode <= 1, VaultError::InvalidMode);
         vault.mode = mode;
         vault.enabled = enabled;
+        vault.last_updated = Clock::get()?.unix_timestamp;
+        Ok(())
+    }
+
+    pub fn deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
+        require!(amount > 0, VaultError::InvalidAmount);
+
+        let vault = &mut ctx.accounts.vault;
+        require!(vault.owner == *ctx.accounts.authority.key, VaultError::Unauthorized);
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.authority.to_account_info(),
+                    to: vault.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        vault.vault_sol_balance = vault.vault_sol_balance.saturating_add(amount);
+        vault.total_value = vault
+            .vault_sol_balance
+            .saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
+        vault.last_updated = Clock::get()?.unix_timestamp;
+        Ok(())
+    }
+
+    pub fn withdraw_sol(ctx: Context<WithdrawSol>, amount: u64) -> Result<()> {
+        require!(amount > 0, VaultError::InvalidAmount);
+
+        let vault = &mut ctx.accounts.vault;
+        require!(vault.owner == *ctx.accounts.authority.key, VaultError::Unauthorized);
+        require!(vault.vault_sol_balance >= amount, VaultError::InsufficientVaultBalance);
+
+        let vault_info = vault.to_account_info();
+        let authority_info = ctx.accounts.authority.to_account_info();
+        let current_lamports = **vault_info.lamports.borrow();
+        let rent_exempt_minimum = Rent::get()?.minimum_balance(vault_info.data_len());
+        require!(
+            current_lamports.saturating_sub(amount) >= rent_exempt_minimum,
+            VaultError::InsufficientVaultBalance
+        );
+
+        **vault_info.try_borrow_mut_lamports()? = current_lamports
+            .checked_sub(amount)
+            .ok_or(VaultError::InsufficientVaultBalance)?;
+
+        let authority_lamports = **authority_info.lamports.borrow();
+        **authority_info.try_borrow_mut_lamports()? = authority_lamports
+            .checked_add(amount)
+            .ok_or(VaultError::InvalidAmount)?;
+
+        vault.vault_sol_balance = vault.vault_sol_balance.saturating_sub(amount);
+        vault.total_value = vault
+            .vault_sol_balance
+            .saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
         vault.last_updated = Clock::get()?.unix_timestamp;
         Ok(())
     }
@@ -74,10 +133,8 @@ pub mod vault_ai {
         }
 
         vault.total_value = vault
-            .holdings
-            .iter()
-            .map(|h| h.amount)
-            .sum();
+            .vault_sol_balance
+            .saturating_add(vault.holdings.iter().map(|h| h.amount).sum());
 
         Ok(())
     }
@@ -119,10 +176,28 @@ pub struct ExecuteTrade<'info> {
     pub authority: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct DepositSol<'info> {
+    #[account(mut, seeds = [b"vault", authority.key().as_ref()], bump)]
+    pub vault: Account<'info, Vault>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawSol<'info> {
+    #[account(mut, seeds = [b"vault", authority.key().as_ref()], bump)]
+    pub vault: Account<'info, Vault>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+}
+
 #[account]
 pub struct Vault {
     pub owner: Pubkey,
     pub agent_authority: Pubkey,
+    pub vault_sol_balance: u64,
     pub total_value: u64,
     pub risk_score: u8,
     pub mode: u8,
@@ -140,7 +215,7 @@ pub struct TokenHolding {
 
 impl Vault {
     pub const MAX_HOLDINGS: usize = 8;
-    pub const MAX_SIZE: usize = 8 + 32 + 32 + 8 + 1 + 1 + 1 + 4 + Self::MAX_HOLDINGS * (32 + 8 + 1) + 8;
+    pub const MAX_SIZE: usize = 8 + 32 + 32 + 8 + 8 + 1 + 1 + 1 + 4 + Self::MAX_HOLDINGS * (32 + 8 + 1) + 8;
 }
 
 #[repr(u8)]
@@ -157,4 +232,8 @@ pub enum VaultError {
     InvalidMode,
     #[msg("Vault is not enabled for trading.")]
     VaultNotEnabled,
+    #[msg("Amount must be greater than zero.")]
+    InvalidAmount,
+    #[msg("Vault does not have enough SOL balance for this operation.")]
+    InsufficientVaultBalance,
 }

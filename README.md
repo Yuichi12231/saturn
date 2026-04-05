@@ -12,9 +12,10 @@ An AI-powered Solana asset management demo with a Phantom-connected web interfac
 
 - Phantom wallet integration in the browser
 - On-chain Vault account initialization and state tracking
+- Real SOL deposit and withdrawal into the on-chain vault account
 - Market indicator visualization from CoinGecko
 - AI agent logic that decides whether to buy or sell based on market momentum and risk
-- Demonstrates the AI → on-chain transaction → smart contract state flow
+- Demonstrates the AI -> on-chain transaction -> smart contract state flow
 
 ## Getting started
 
@@ -77,10 +78,9 @@ After deployment, update the `PROGRAM_ID` constant in:
 
 1. **Connect wallet** — Click "Select Wallet" and connect Phantom (ensure devnet is selected).
 2. **Create Vault** — Click "Create Vault" to initialize your on-chain vault for trading.
-3. **Choose Mode** — Select **Safe Mode** (preserve balance) or **Risk Mode** (active trading).
-4. **Enable Agent** — Toggle "ON" to allow the backend AI agent to execute trades.
-5. **Set Agent Authority** — Paste backend agent wallet address into "Set Agent Authority" and save.
-6. **Start Backend Agent** — Click "Start Agent" button to activate market monitoring for your vault.
+3. **Fund Vault (SOL)** — Deposit SOL into vault using the Deposit button in the UI.
+4. **Choose Mode** — Select **Safe Mode** (preserve balance) or **Risk Mode** (active trading), then click **Apply Mode**.
+5. **Start Backend Agent** — Click "Start Agent" to auto-sync authority and activate market monitoring for your vault.
 
 The AI agent will:
 - Monitor Solana market data via CoinGecko, Helius, and BirdEye APIs.
@@ -147,8 +147,7 @@ If Render asks for billing details in your region, you can deploy `ai-agent` on 
    - `AGENT_WALLET_SECRET_KEY`
 5. Deploy and copy the generated Railway URL.
 6. Verify backend:
-   - `https://<your-railway-domain>/api/agent/status`
-7. Set `VITE_AGENT_API_URL` in Vercel to that Railway URL.
+   - `https://<your-railway-domain>/api/agent/status`   - `https://<your-railway-domain>/api/agent/health`7. Set `VITE_AGENT_API_URL` in Vercel to that Railway URL.
 8. Redeploy Vercel frontend.
 
 ## Notes

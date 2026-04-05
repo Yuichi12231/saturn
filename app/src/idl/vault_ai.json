@@ -33,6 +33,27 @@
       ]
     },
     {
+      "name": "depositSol",
+      "accounts": [
+        {"name": "vault", "isMut": true, "isSigner": false},
+        {"name": "authority", "isMut": true, "isSigner": true},
+        {"name": "systemProgram", "isMut": false, "isSigner": false}
+      ],
+      "args": [
+        {"name": "amount", "type": "u64"}
+      ]
+    },
+    {
+      "name": "withdrawSol",
+      "accounts": [
+        {"name": "vault", "isMut": true, "isSigner": false},
+        {"name": "authority", "isMut": true, "isSigner": true}
+      ],
+      "args": [
+        {"name": "amount", "type": "u64"}
+      ]
+    },
+    {
       "name": "executeTrade",
       "accounts": [
         {"name": "vault", "isMut": true, "isSigner": false},
@@ -54,6 +75,7 @@
         "fields": [
           {"name": "owner", "type": "publicKey"},
           {"name": "agentAuthority", "type": "publicKey"},
+          {"name": "vaultSolBalance", "type": "u64"},
           {"name": "totalValue", "type": "u64"},
           {"name": "riskScore", "type": "u8"},
           {"name": "mode", "type": "u8"},
