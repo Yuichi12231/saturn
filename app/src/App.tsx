@@ -160,6 +160,15 @@ const AppContent = () => {
         PROGRAM_ID,
       );
 
+      // Vault PDA is deterministic. If it already exists, do not call initialize again.
+      const existingVault = await connection.getAccountInfo(vaultPda);
+      if (existingVault) {
+        setStatus('Vault already exists for this wallet. Loading current vault state...');
+        await fetchVault();
+        setLoading(false);
+        return;
+      }
+
       console.log('Creating vault:', {
         wallet: anchorWallet.publicKey!.toBase58(),
         vaultPda: vaultPda.toBase58(),
