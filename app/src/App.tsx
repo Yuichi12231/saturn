@@ -71,11 +71,22 @@ interface TraderAnalytics {
   avg24hChange: number;
   momentumScore: number;
   volatilityScore: number;
+  trendRegime: 'bullish' | 'bearish' | 'sideways';
+  relativeStrengthPct: number;
+  realizedVolPct: number;
+  riskRegime: 'risk-on' | 'neutral' | 'risk-off';
 }
 
 interface MarketEntry {
   usd: number;
   usd_24hr_change: number;
+}
+
+interface MarketSnapshot {
+  ts: number;
+  sol: number;
+  ray: number;
+  orca: number;
 }
 
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
@@ -114,6 +125,7 @@ const AppContent = () => {
   const [marketAnalytics, setMarketAnalytics] = useState<TraderAnalytics | null>(null);
   const [marketSource, setMarketSource] = useState('loading');
   const [marketError, setMarketError] = useState('');
+  const [marketHistory, setMarketHistory] = useState<MarketSnapshot[]>([]);
 
   const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || (runningLocalFrontend ? 'http://localhost:3001' : '')).trim();
@@ -140,7 +152,7 @@ const AppContent = () => {
     return vault.owner.toBase58() === anchorWallet.publicKey!.toBase58();
   }, [vault, anchorWallet]);
 
-  const computeAnalytics = useCallback((normalized: Record<string, MarketEntry>) => {
+  const computeAnalytics = useCallback((normalized: Record<string, MarketEntry>, history: MarketSnapshot[]) => {
     const changes = Object.values(normalized).map((entry) => Number(entry.usd_24hr_change ?? 0));
     if (changes.length === 0) {
       setMarketAnalytics(null);
@@ -155,11 +167,45 @@ const AppContent = () => {
     );
     const momentumScore = Math.min(100, Math.max(0, 50 + avg24hChange * 2));
 
+    const solSeries = history.map((item) => item.sol).filter((value) => Number.isFinite(value) && value > 0);
+    const raySeries = history.map((item) => item.ray).filter((value) => Number.isFinite(value) && value > 0);
+    const orcaSeries = history.map((item) => item.orca).filter((value) => Number.isFinite(value) && value > 0);
+
+    const shortWindow = solSeries.slice(-3);
+    const longWindow = solSeries.slice(-6);
+    const shortAvg = shortWindow.length > 0 ? shortWindow.reduce((sum, value) => sum + value, 0) / shortWindow.length : 0;
+    const longAvg = longWindow.length > 0 ? longWindow.reduce((sum, value) => sum + value, 0) / longWindow.length : 0;
+    const trendDeltaPct = longAvg > 0 ? ((shortAvg - longAvg) / longAvg) * 100 : 0;
+    const trendRegime: 'bullish' | 'bearish' | 'sideways' = trendDeltaPct > 0.4 ? 'bullish' : trendDeltaPct < -0.4 ? 'bearish' : 'sideways';
+
+    const solRet = solSeries.length >= 2 ? ((solSeries[solSeries.length - 1] - solSeries[0]) / solSeries[0]) * 100 : 0;
+    const rayRet = raySeries.length >= 2 ? ((raySeries[raySeries.length - 1] - raySeries[0]) / raySeries[0]) * 100 : 0;
+    const orcaRet = orcaSeries.length >= 2 ? ((orcaSeries[orcaSeries.length - 1] - orcaSeries[0]) / orcaSeries[0]) * 100 : 0;
+    const basketRet = (rayRet + orcaRet) / 2;
+    const relativeStrengthPct = solRet - basketRet;
+
+    const returns = solSeries.slice(1).map((value, index) => (value - solSeries[index]) / solSeries[index]).filter((value) => Number.isFinite(value));
+    const meanReturn = returns.length > 0 ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0;
+    const variance = returns.length > 1
+      ? returns.reduce((sum, value) => sum + (value - meanReturn) ** 2, 0) / returns.length
+      : 0;
+    const realizedVolPct = Math.sqrt(Math.max(variance, 0)) * 100;
+
+    const riskComposite = momentumScore * 0.35
+      + breadthPct * 0.25
+      + Math.min(100, Math.max(0, 50 + relativeStrengthPct * 4)) * 0.25
+      + Math.min(100, Math.max(0, 50 - realizedVolPct * 4)) * 0.15;
+    const riskRegime: 'risk-on' | 'neutral' | 'risk-off' = riskComposite >= 58 ? 'risk-on' : riskComposite <= 42 ? 'risk-off' : 'neutral';
+
     setMarketAnalytics({
       breadthPct,
       avg24hChange,
       momentumScore,
       volatilityScore,
+      trendRegime,
+      relativeStrengthPct,
+      realizedVolPct,
+      riskRegime,
     });
   }, []);
 
@@ -194,7 +240,17 @@ const AppContent = () => {
       }
 
       setMarket(normalized);
-      computeAnalytics(normalized);
+      const snapshot: MarketSnapshot = {
+        ts: Date.now(),
+        sol: normalized.solana.usd,
+        ray: normalized.raydium.usd,
+        orca: normalized.orca.usd,
+      };
+      setMarketHistory((prev) => {
+        const next = [...prev, snapshot].slice(-120);
+        computeAnalytics(normalized, next);
+        return next;
+      });
       setMarketSource('CoinGecko');
       setMarketError('');
       return normalized;
@@ -229,7 +285,17 @@ const AppContent = () => {
         }
 
         setMarket(normalized);
-        computeAnalytics(normalized);
+        const snapshot: MarketSnapshot = {
+          ts: Date.now(),
+          sol: normalized.solana.usd,
+          ray: normalized.raydium.usd,
+          orca: normalized.orca.usd,
+        };
+        setMarketHistory((prev) => {
+          const next = [...prev, snapshot].slice(-120);
+          computeAnalytics(normalized, next);
+          return next;
+        });
         setMarketSource('Jupiter fallback (no 24h change)');
         setMarketError('CoinGecko unavailable; fallback feed active');
         return normalized;
@@ -237,6 +303,7 @@ const AppContent = () => {
         console.error('All market feeds failed', fallbackError);
         setMarket({});
         setMarketAnalytics(null);
+        setMarketHistory([]);
         setMarketSource('unavailable');
         setMarketError(String((fallbackError as any)?.message || 'Failed to load market feeds'));
         return {};
@@ -715,6 +782,14 @@ const AppContent = () => {
   }, [fetchMarketData]);
 
   useEffect(() => {
+    const interval = setInterval(() => {
+      fetchMarketData();
+    }, 45000);
+
+    return () => clearInterval(interval);
+  }, [fetchMarketData]);
+
+  useEffect(() => {
     if (wallet.connected) {
       fetchVault();
     }
@@ -755,6 +830,9 @@ const AppContent = () => {
 
         <section className="card">
           <h2>Trader Analytics</h2>
+          <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>
+            Window: {marketHistory.length} snapshots
+          </p>
           {marketAnalytics ? (
             <>
               <div className="metric">
@@ -774,6 +852,40 @@ const AppContent = () => {
               <div className="metric">
                 <span>Volatility score</span>
                 <strong>{marketAnalytics.volatilityScore.toFixed(1)} / 100</strong>
+              </div>
+              <div className="metric">
+                <span>Trend regime</span>
+                <strong style={{
+                  color: marketAnalytics.trendRegime === 'bullish'
+                    ? '#22c55e'
+                    : marketAnalytics.trendRegime === 'bearish'
+                      ? '#ef4444'
+                      : '#f59e0b',
+                }}>
+                  {marketAnalytics.trendRegime}
+                </strong>
+              </div>
+              <div className="metric">
+                <span>Relative strength (SOL vs RAY/ORCA)</span>
+                <strong style={{ color: marketAnalytics.relativeStrengthPct >= 0 ? '#22c55e' : '#ef4444' }}>
+                  {marketAnalytics.relativeStrengthPct.toFixed(2)}%
+                </strong>
+              </div>
+              <div className="metric">
+                <span>Realized volatility</span>
+                <strong>{marketAnalytics.realizedVolPct.toFixed(2)}%</strong>
+              </div>
+              <div className="metric">
+                <span>Risk regime</span>
+                <strong style={{
+                  color: marketAnalytics.riskRegime === 'risk-on'
+                    ? '#22c55e'
+                    : marketAnalytics.riskRegime === 'risk-off'
+                      ? '#ef4444'
+                      : '#f59e0b',
+                }}>
+                  {marketAnalytics.riskRegime}
+                </strong>
               </div>
             </>
           ) : (
