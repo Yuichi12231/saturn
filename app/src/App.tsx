@@ -73,6 +73,11 @@ interface TraderAnalytics {
   volatilityScore: number;
 }
 
+interface MarketEntry {
+  usd: number;
+  usd_24hr_change: number;
+}
+
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
 
 const extractErrorMessage = (error: unknown): string => {
@@ -107,6 +112,8 @@ const AppContent = () => {
   const [withdrawSolInput, setWithdrawSolInput] = useState('0.1');
   const [agentHealth, setAgentHealth] = useState<AgentHealth | null>(null);
   const [marketAnalytics, setMarketAnalytics] = useState<TraderAnalytics | null>(null);
+  const [marketSource, setMarketSource] = useState('loading');
+  const [marketError, setMarketError] = useState('');
 
   const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || (runningLocalFrontend ? 'http://localhost:3001' : '')).trim();
@@ -133,43 +140,109 @@ const AppContent = () => {
     return vault.owner.toBase58() === anchorWallet.publicKey!.toBase58();
   }, [vault, anchorWallet]);
 
+  const computeAnalytics = useCallback((normalized: Record<string, MarketEntry>) => {
+    const changes = Object.values(normalized).map((entry) => Number(entry.usd_24hr_change ?? 0));
+    if (changes.length === 0) {
+      setMarketAnalytics(null);
+      return;
+    }
+
+    const avg24hChange = changes.reduce((sum, value) => sum + value, 0) / changes.length;
+    const breadthPct = (changes.filter((value) => value > 0).length / changes.length) * 100;
+    const volatilityScore = Math.min(
+      100,
+      Math.max(0, changes.reduce((sum, value) => sum + Math.abs(value), 0) / changes.length * 4),
+    );
+    const momentumScore = Math.min(100, Math.max(0, 50 + avg24hChange * 2));
+
+    setMarketAnalytics({
+      breadthPct,
+      avg24hChange,
+      momentumScore,
+      volatilityScore,
+    });
+  }, []);
+
   const fetchMarketData = useCallback(async () => {
     try {
       const response = await fetch(
         'https://api.coingecko.com/api/v3/simple/price?ids=solana,raydium,orca&vs_currencies=usd&include_24hr_change=true',
       );
-      const data = await response.json();
-      setMarket(data);
-
-      const pairs = Object.values(data as Record<string, any>).filter(
-        (entry: any) => Number.isFinite(entry?.usd_24hr_change),
-      ) as Array<{ usd_24hr_change: number }>;
-      if (pairs.length > 0) {
-        const changes = pairs.map((entry) => Number(entry.usd_24hr_change));
-        const avg24hChange = changes.reduce((sum, value) => sum + value, 0) / changes.length;
-        const breadthPct = (changes.filter((value) => value > 0).length / changes.length) * 100;
-        const volatilityScore = Math.min(
-          100,
-          Math.max(0, changes.reduce((sum, value) => sum + Math.abs(value), 0) / changes.length * 4),
-        );
-        const momentumScore = Math.min(100, Math.max(0, 50 + avg24hChange * 2));
-        setMarketAnalytics({
-          breadthPct,
-          avg24hChange,
-          momentumScore,
-          volatilityScore,
-        });
-      } else {
-        setMarketAnalytics(null);
+      if (!response.ok) {
+        throw new Error(`CoinGecko HTTP ${response.status}`);
       }
-      return data;
+
+      const data = await response.json();
+      const normalized: Record<string, MarketEntry> = {
+        solana: {
+          usd: Number((data as any)?.solana?.usd),
+          usd_24hr_change: Number((data as any)?.solana?.usd_24hr_change ?? 0),
+        },
+        raydium: {
+          usd: Number((data as any)?.raydium?.usd),
+          usd_24hr_change: Number((data as any)?.raydium?.usd_24hr_change ?? 0),
+        },
+        orca: {
+          usd: Number((data as any)?.orca?.usd),
+          usd_24hr_change: Number((data as any)?.orca?.usd_24hr_change ?? 0),
+        },
+      };
+
+      const hasValidUsd = Object.values(normalized).some((entry) => Number.isFinite(entry.usd) && entry.usd > 0);
+      if (!hasValidUsd) {
+        throw new Error('CoinGecko returned no valid prices');
+      }
+
+      setMarket(normalized);
+      computeAnalytics(normalized);
+      setMarketSource('CoinGecko');
+      setMarketError('');
+      return normalized;
     } catch (error) {
-      console.error(error);
-      setMarket({});
-      setMarketAnalytics(null);
-      return {};
+      console.warn('Primary market feed failed, trying Jupiter fallback', error);
+
+      try {
+        const response = await fetch('https://price.jup.ag/v6/price?ids=SOL,RAY,ORCA');
+        if (!response.ok) {
+          throw new Error(`Jupiter HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const normalized: Record<string, MarketEntry> = {
+          solana: {
+            usd: Number((data as any)?.data?.SOL?.price),
+            usd_24hr_change: 0,
+          },
+          raydium: {
+            usd: Number((data as any)?.data?.RAY?.price),
+            usd_24hr_change: 0,
+          },
+          orca: {
+            usd: Number((data as any)?.data?.ORCA?.price),
+            usd_24hr_change: 0,
+          },
+        };
+
+        const hasValidUsd = Object.values(normalized).some((entry) => Number.isFinite(entry.usd) && entry.usd > 0);
+        if (!hasValidUsd) {
+          throw new Error('Jupiter returned no valid prices');
+        }
+
+        setMarket(normalized);
+        computeAnalytics(normalized);
+        setMarketSource('Jupiter fallback (no 24h change)');
+        setMarketError('CoinGecko unavailable; fallback feed active');
+        return normalized;
+      } catch (fallbackError) {
+        console.error('All market feeds failed', fallbackError);
+        setMarket({});
+        setMarketAnalytics(null);
+        setMarketSource('unavailable');
+        setMarketError(String((fallbackError as any)?.message || 'Failed to load market feeds'));
+        return {};
+      }
     }
-  }, []);
+  }, [computeAnalytics]);
 
   const fetchVault = useCallback(async () => {
     if (!program || !anchorWallet) return;
@@ -629,6 +702,15 @@ const AppContent = () => {
   }, [refreshAgentStatus, refreshAgentHealth]);
 
   useEffect(() => {
+    const interval = setInterval(() => {
+      refreshAgentStatus();
+      refreshAgentHealth();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [refreshAgentStatus, refreshAgentHealth]);
+
+  useEffect(() => {
     fetchMarketData();
   }, [fetchMarketData]);
 
@@ -653,6 +735,7 @@ const AppContent = () => {
       <div className="section-grid">
         <section className="card">
           <h2>Market Overview</h2>
+          <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>Feed source: {marketSource}</p>
           {Object.keys(market).length === 0 ? (
             <p>Loading market indicators…</p>
           ) : (
@@ -694,11 +777,11 @@ const AppContent = () => {
               </div>
             </>
           ) : (
-            <p>Analytics will appear once market feeds are available.</p>
+            <p>Analytics unavailable: {marketError || 'market feeds are currently unavailable.'}</p>
           )}
         </section>
 
-        <section className="card">
+        <section className="card vault-overview-card">
           <h2>Vault Overview</h2>
           {wallet.connected ? (
             loading ? (
@@ -779,10 +862,10 @@ const AppContent = () => {
                     Enabled state is controlled automatically by Start/Stop Agent.
                   </div>
                   <div style={{ marginTop: 14, display: 'grid', gap: 8 }}>
-                    <div style={{ fontSize: '0.9em', color: '#9ca3af' }}>
+                    <div className="long-value" style={{ fontSize: '0.9em', color: '#9ca3af' }}>
                       Agent authority for this vault: {vault.agentAuthority.toBase58()}
                     </div>
-                    <div style={{ fontSize: '0.9em', color: '#9ca3af' }}>
+                    <div className="long-value" style={{ fontSize: '0.9em', color: '#9ca3af' }}>
                       Backend agent wallet: {backendAgentWallet || 'Waiting for backend status...'}
                     </div>
                     <div style={{ fontSize: '0.85em', color: '#cbd5e1' }}>
@@ -896,6 +979,15 @@ const AppContent = () => {
         </div>
         <p>{recommendation}</p>
         <p>Agent status is controlled from this page and runs on your backend service.</p>
+        <button
+          onClick={() => {
+            refreshAgentStatus();
+            refreshAgentHealth();
+          }}
+          style={{ background: '#334155', color: '#fff', marginBottom: 12 }}
+        >
+          Refresh API Diagnostics
+        </button>
         <pre style={{ background: 'rgba(255,255,255,0.04)', padding: 12, borderRadius: 12, whiteSpace: 'pre-wrap' }}>
           Agent interval: {agentIntervalMinutes} minute(s)
           {'\n'}Status: {agentStatus}
