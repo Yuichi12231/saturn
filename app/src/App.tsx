@@ -48,20 +48,20 @@ interface AgentHealth {
   agentPublicKey?: string;
   agentBalanceSol?: number;
   env?: {
-    openrouterConfigured?: boolean;
-    openrouterModel?: string;
+    geminiConfigured?: boolean;
+    geminiModel?: string;
     heliusConfigured?: boolean;
     birdeyeConfigured?: boolean;
     walletConfigured?: boolean;
   };
   checks?: {
-    openrouter?: string;
+    gemini?: string;
     helius?: string;
     birdeye?: string;
     marketData?: string;
   };
   errors?: {
-    openrouter?: string | null;
+    gemini?: string | null;
     helius?: string | null;
     birdeye?: string | null;
     marketData?: string | null;
@@ -681,8 +681,14 @@ const AppContent = () => {
   const refreshAgentStatus = useCallback(async () => {
     const result = await callAgentApi('/api/agent/status');
     if (result) {
-      setAgentRunning(result.running);
-      setAgentIntervalMinutes(result.intervalMinutes || agentIntervalMinutes);
+      const isRunning = Boolean(result.running);
+      setAgentRunning(isRunning);
+      if (isRunning && typeof result.intervalMinutes === 'number' && result.intervalMinutes > 0) {
+        setAgentIntervalMinutes(result.intervalMinutes);
+      }
+      if (typeof result.strategy === 'string' && ['auto', 'llm', 'rule'].includes(result.strategy)) {
+        setAgentStrategy(result.strategy as 'auto' | 'llm' | 'rule');
+      }
       setAgentStatus(result.message || 'Agent status updated.');
       setAgentReady(true);
       if (result.agentPublicKey) {
@@ -692,7 +698,7 @@ const AppContent = () => {
         setRecommendation(result.lastAction);
       }
     }
-  }, [agentIntervalMinutes, callAgentApi]);
+  }, [callAgentApi]);
 
   const refreshAgentHealth = useCallback(async () => {
     const result = await callAgentApi('/api/agent/health');
@@ -765,7 +771,13 @@ const AppContent = () => {
       strategy: agentStrategy,
     });
     if (result) {
-      setAgentRunning(result.running);
+      setAgentRunning(Boolean(result.running));
+      if (typeof result.intervalMinutes === 'number' && result.intervalMinutes > 0) {
+        setAgentIntervalMinutes(result.intervalMinutes);
+      }
+      if (typeof result.strategy === 'string' && ['auto', 'llm', 'rule'].includes(result.strategy)) {
+        setAgentStrategy(result.strategy as 'auto' | 'llm' | 'rule');
+      }
       setAgentStatus(result.message);
       setAgentReady(true);
       if (result.agentPublicKey) {
@@ -1146,8 +1158,8 @@ const AppContent = () => {
           {'\n'}Status: {agentStatus}
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
-          {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
-          {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
+          {'\n'}Gemini: {agentHealth?.checks?.gemini || 'unknown'}
+          {'\n'}Model: {agentHealth?.env?.geminiModel || 'unknown'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
           {'\n'}BirdEye: {agentHealth?.checks?.birdeye || 'unknown'}
           {'\n'}MarketData: {agentHealth?.checks?.marketData || 'unknown'}
@@ -1182,10 +1194,10 @@ const AppContent = () => {
             ))}
           </div>
         )}
-        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
+        {(agentHealth?.errors?.gemini || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
           <div style={{ marginTop: 10, color: '#f59e0b' }}>
             <div>API diagnostics:</div>
-            {agentHealth?.errors?.openrouter && <div>OpenRouter error: {agentHealth.errors.openrouter}</div>}
+            {agentHealth?.errors?.gemini && <div>Gemini error: {agentHealth.errors.gemini}</div>}
             {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
             {agentHealth?.errors?.birdeye && <div>BirdEye error: {agentHealth.errors.birdeye}</div>}
             {agentHealth?.errors?.marketData && <div>MarketData error: {agentHealth.errors.marketData}</div>}
