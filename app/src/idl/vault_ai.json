@@ -12,6 +12,17 @@
       "args": []
     },
     {
+      "name": "setVaultMode",
+      "accounts": [
+        {"name": "vault", "isMut": true, "isSigner": false},
+        {"name": "authority", "isMut": true, "isSigner": true}
+      ],
+      "args": [
+        {"name": "mode", "type": "u8"},
+        {"name": "enabled", "type": "bool"}
+      ]
+    },
+    {
       "name": "executeTrade",
       "accounts": [
         {"name": "vault", "isMut": true, "isSigner": false},
@@ -34,6 +45,8 @@
           {"name": "owner", "type": "publicKey"},
           {"name": "totalValue", "type": "u64"},
           {"name": "riskScore", "type": "u8"},
+          {"name": "mode", "type": "u8"},
+          {"name": "enabled", "type": "bool"},
           {"name": "holdings", "type": {"vec": {"defined": "TokenHolding"}}},
           {"name": "lastUpdated", "type": "i64"}
         ]

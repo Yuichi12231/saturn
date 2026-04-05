@@ -8,4 +8,4 @@ name = "vault_ai"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-anchor-lang = "0.34.2"
+anchor-lang = "1.0.0"

@@ -3,16 +3,22 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "start": "ts-node src/index.ts"
+    "start": "ts-node src/server.ts",
+    "server": "ts-node src/server.ts",
+    "run-once": "ts-node src/index.ts"
   },
   "dependencies": {
     "@project-serum/anchor": "^0.26.0",
     "@solana/web3.js": "^1.74.0",
     "axios": "^1.6.4",
     "bs58": "^5.0.0",
-    "dotenv": "^16.3.1"
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.18",
+    "@types/express": "^4.17.18",
     "ts-node": "^10.9.1",
     "typescript": "^5.6.2"
   }

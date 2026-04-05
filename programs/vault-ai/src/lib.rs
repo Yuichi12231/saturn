@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("CF3muRPHbkS9T7Qfu7GRH7ZLGH1hvWeSNS2PjJpXJMNW");
+declare_id!("csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y");
 
 #[program]
 pub mod vault_ai {
@@ -11,7 +11,19 @@ pub mod vault_ai {
         vault.owner = *ctx.accounts.authority.key;
         vault.total_value = 0;
         vault.risk_score = 50;
+        vault.mode = VaultMode::Safe as u8;
+        vault.enabled = false;
         vault.holdings = Vec::new();
+        vault.last_updated = Clock::get()?.unix_timestamp;
+        Ok(())
+    }
+
+    pub fn set_vault_mode(ctx: Context<SetVaultMode>, mode: u8, enabled: bool) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        require!(vault.owner == *ctx.accounts.authority.key, VaultError::Unauthorized);
+        require!(mode <= 1, VaultError::InvalidMode);
+        vault.mode = mode;
+        vault.enabled = enabled;
         vault.last_updated = Clock::get()?.unix_timestamp;
         Ok(())
     }
@@ -25,6 +37,7 @@ pub mod vault_ai {
     ) -> Result<()> {
         let vault = &mut ctx.accounts.vault;
         require!(vault.owner == *ctx.accounts.authority.key, VaultError::Unauthorized);
+        require!(vault.enabled, VaultError::VaultNotEnabled);
         vault.risk_score = new_risk_score;
         vault.last_updated = Clock::get()?.unix_timestamp;
 
@@ -73,6 +86,13 @@ pub struct InitializeVault<'info> {
 }
 
 #[derive(Accounts)]
+pub struct SetVaultMode<'info> {
+    #[account(mut, seeds = [b"vault", authority.key().as_ref()], bump)]
+    pub vault: Account<'info, Vault>,
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct ExecuteTrade<'info> {
     #[account(mut, seeds = [b"vault", authority.key().as_ref()], bump)]
     pub vault: Account<'info, Vault>,
@@ -84,6 +104,8 @@ pub struct Vault {
     pub owner: Pubkey,
     pub total_value: u64,
     pub risk_score: u8,
+    pub mode: u8,
+    pub enabled: bool,
     pub holdings: Vec<TokenHolding>,
     pub last_updated: i64,
 }
@@ -97,11 +119,21 @@ pub struct TokenHolding {
 
 impl Vault {
     pub const MAX_HOLDINGS: usize = 8;
-    pub const MAX_SIZE: usize = 8 + 32 + 8 + 1 + 4 + Self::MAX_HOLDINGS * (32 + 8 + 1) + 8;
+    pub const MAX_SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 4 + Self::MAX_HOLDINGS * (32 + 8 + 1) + 8;
+}
+
+#[repr(u8)]
+pub enum VaultMode {
+    Safe = 0,
+    Risk = 1,
 }
 
 #[error_code]
 pub enum VaultError {
     #[msg("Only the vault owner can execute this instruction.")]
     Unauthorized,
+    #[msg("Invalid vault mode.")]
+    InvalidMode,
+    #[msg("Vault is not enabled for trading.")]
+    VaultNotEnabled,
 }

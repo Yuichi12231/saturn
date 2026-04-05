@@ -18,25 +18,76 @@ An AI-powered Solana asset management demo with a Phantom-connected web interfac
 
 ## Getting started
 
+### Prerequisites
+
+1. Install [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools)
+2. Install [Node.js 16+](https://nodejs.org/)
+3. Create a Devnet wallet:
+   ```bash
+   solana-keygen new --outfile ~/.config/solana/devnet-wallet.json
+   solana config set --keypair ~/.config/solana/devnet-wallet.json
+   solana config set --url devnet
+   ```
+4. Request devnet SOL (airdrop):
+   ```bash
+   solana airdrop 10
+   ```
+
+### Deploy smart contract to devnet
+
+**Quick start (automated):**
+```bash
+./deploy-devnet.sh
+```
+
+Or **manual deployment**:
+```bash
+cd programs/vault-ai
+anchor build
+anchor deploy --provider.cluster devnet
+```
+
+After deployment, update the `PROGRAM_ID` constant in:
+- `app/src/App.tsx` (line ~22)
+- `ai-agent/src/agent.ts` (line ~10)
+
+### Setup and run
+
 1. Install dependencies:
+   ```bash
+   npm install
+   ```
 
-```bash
-npm install
-```
+2. Create `.env` in `ai-agent/` with your API keys (see `ai-agent/.env.example`).
 
-2. Create a `.env` file in `ai-agent` based on `ai-agent/.env.example`.
+3. Switch Phantom wallet to **Devnet** in wallet settings.
 
-3. Run the frontend:
+4. Run frontend:
+   ```bash
+   npm run dev
+   ```
 
-```bash
-npm run dev
-```
+5. In another terminal, start the AI agent backend:
+   ```bash
+   cd ai-agent
+   npm start
+   ```
 
-4. Run the AI agent:
+## How to use Saturn
 
-```bash
-npm run agent
-```
+1. **Connect wallet** — Click "Select Wallet" and connect Phantom (ensure devnet is selected).
+2. **Create Vault** — Click "Create Vault" to initialize your on-chain vault for trading.
+3. **Choose Mode** — Select **Safe Mode** (preserve balance) or **Risk Mode** (active trading).
+4. **Enable Agent** — Toggle "ON" to allow the backend AI agent to execute trades.
+5. **Start Backend Agent** — Click "Start Agent" button to activate market monitoring.
+
+The AI agent will:
+- Monitor Solana market data via CoinGecko, Helius, and BirdEye APIs.
+- Use OpenAI to generate trading decisions based on market signals.
+- Execute buy/sell trades on-chain for SOL, RAY, and ORCA tokens.
+- Update your Vault risk score and holdings on-chain.
+- Respect your mode: Safe = minimal trades, Risk = active trading.
+
 
 ## Environment variables
 

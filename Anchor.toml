@@ -1,9 +1,12 @@
-[programs.localnet]
-vault_ai = "VaultAI111111111111111111111111111111111111"
+[toolchain]
+anchor_version = "1.0.0"
+
+[programs.devnet]
+vault_ai = "csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y"
 
 [registry]
 url = "https://anchor.projectserum.com"
 
 [provider]
-cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+cluster = "devnet"
+wallet = "~/.config/solana/devnet-wallet.json"

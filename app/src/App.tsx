@@ -36,6 +36,8 @@ interface VaultState {
   owner: PublicKey;
   totalValue: anchor.BN;
   riskScore: number;
+  mode: number;
+  enabled: boolean;
   holdings: TokenHolding[];
   lastUpdated: anchor.BN;
 }
@@ -50,7 +52,12 @@ const AppContent = () => {
   const [recommendation, setRecommendation] = useState('AI agent watching Solana market for risk-managed decisions.');
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentIntervalMinutes, setAgentIntervalMinutes] = useState(1);
-  const [agentTimerId, setAgentTimerId] = useState<number | null>(null);
+  const [agentStatus, setAgentStatus] = useState('Agent backend not connected.');
+  const [agentReady, setAgentReady] = useState(false);
+  const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
+  const [vaultEnabled, setVaultEnabled] = useState(false);
+
+  const AGENT_API_URL = import.meta.env.VITE_AGENT_API_URL || 'http://localhost:3001';
 
   const connection = useMemo(() => new Connection(endpoint), []);
 
@@ -99,10 +106,13 @@ const AppContent = () => {
         PROGRAM_ID,
       );
       const account = await program.account.vault.fetch(vaultPda);
+      const mode = account.mode === 0 ? 'safe' : 'risk';
       setVault({
         owner: account.owner,
         totalValue: account.totalValue,
         riskScore: account.riskScore,
+        mode: account.mode,
+        enabled: account.enabled,
         holdings: account.holdings.map((item: any) => ({
           mint: item.mint,
           amount: item.amount,
@@ -110,6 +120,8 @@ const AppContent = () => {
         })),
         lastUpdated: account.lastUpdated,
       });
+      setVaultMode(mode);
+      setVaultEnabled(account.enabled);
       setStatus('Vault loaded');
     } catch (error) {
       console.warn('Vault not found or failed to load', error);
@@ -121,14 +133,44 @@ const AppContent = () => {
   }, [anchorWallet, program]);
 
   const createVault = useCallback(async () => {
-    if (!program || !anchorWallet) return;
+    if (!program || !anchorWallet) {
+      setStatus('Wallet or program not connected');
+      return;
+    }
     setLoading(true);
     setStatus('Initializing vault...');
     try {
+      // Verify program is deployed
+      const programAccount = await connection.getAccountInfo(PROGRAM_ID);
+      if (!programAccount) {
+        setStatus(
+          `❌ Smart contract not deployed at ${PROGRAM_ID.toBase58()} on devnet. ` +
+          `Please run: cd programs/vault-ai && anchor build && anchor deploy --provider.cluster devnet`
+        );
+        setLoading(false);
+        return;
+      }
+
+      // Check wallet balance
+      const balance = await connection.getBalance(anchorWallet.publicKey!);
+      if (balance < 5000000) {
+        setStatus(`⚠️ Low balance: ${(balance / 1e9).toFixed(2)} SOL. Need at least 0.005 SOL for vault creation.`);
+        setLoading(false);
+        return;
+      }
+
       const [vaultPda, bump] = await PublicKey.findProgramAddress(
         [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
         PROGRAM_ID,
       );
+
+      console.log('Creating vault:', {
+        wallet: anchorWallet.publicKey!.toBase58(),
+        vaultPda: vaultPda.toBase58(),
+        bump,
+        program: PROGRAM_ID.toBase58(),
+      });
+
       await program.rpc.initializeVault({
         accounts: {
           vault: vaultPda,
@@ -136,70 +178,115 @@ const AppContent = () => {
           systemProgram: anchor.web3.SystemProgram.programId,
         },
       });
-      setStatus('Vault created successfully');
+      setStatus('✅ Vault created successfully!');
       await fetchVault();
     } catch (error) {
-      console.error(error);
-      setStatus('Failed to create vault');
+      const err = error as any;
+      console.error('Vault creation error:', err);
+      
+      let errorMsg = 'Failed to create vault';
+      if (err.error?.message) {
+        errorMsg = err.error.message;
+      } else if (err.message) {
+        errorMsg = err.message;
+      } else if (err.logs) {
+        errorMsg = `Transaction error: ${err.logs.join('; ')}`;
+      }
+      
+      setStatus(`❌ ${errorMsg}`);
     } finally {
       setLoading(false);
     }
-  }, [anchorWallet, fetchVault, program]);
+  }, [anchorWallet, connection, fetchVault, program]);
 
-  const runAgentTick = useCallback(async () => {
-    const currentMarket = await fetchMarketData();
-    const solChange = currentMarket.solana?.usd_24h_change ?? 0;
-    const rayChange = currentMarket.raydium?.usd_24h_change ?? 0;
-    const orcaChange = currentMarket.orca?.usd_24h_change ?? 0;
-    let action = 'hold';
-    let message = 'Agent is watching the market.';
 
-    if (solChange < -2.5) {
-      action = 'sell';
-      message = `AI recommends reducing risk: sell or hedge SOL. 24h change ${solChange.toFixed(2)}%.`;
-    } else if (rayChange > 2.5) {
-      action = 'buy';
-      message = `AI recommends buying RAY on momentum. 24h change ${rayChange.toFixed(2)}%.`;
-    } else if (orcaChange > 1.8) {
-      action = 'buy';
-      message = `AI recommends buying ORCA on positive momentum. 24h change ${orcaChange.toFixed(2)}%.`;
-    } else {
-      message = `AI recommends holding for now. SOL ${solChange.toFixed(2)}%, RAY ${rayChange.toFixed(2)}%, ORCA ${orcaChange.toFixed(2)}%.`;
+  const toggleVaultMode = useCallback(async (newMode: 'safe' | 'risk', enabled: boolean) => {
+    if (!program || !anchorWallet || !vault) return;
+    setLoading(true);
+    setStatus(`Setting vault mode to ${newMode}...`);
+    try {
+      const [vaultPda] = await PublicKey.findProgramAddress(
+        [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
+        PROGRAM_ID,
+      );
+      const modeValue = newMode === 'safe' ? 0 : 1;
+      await program.rpc.setVaultMode(modeValue, enabled, {
+        accounts: {
+          vault: vaultPda,
+          authority: anchorWallet.publicKey,
+        },
+      });
+      setVaultMode(newMode);
+      setVaultEnabled(enabled);
+      setStatus(`Vault mode set to ${newMode} (${enabled ? 'enabled' : 'disabled'})`);
+      await fetchVault();
+    } catch (error) {
+      console.error('Failed to set vault mode:', error);
+      setStatus('Failed to set vault mode');
+    } finally {
+      setLoading(false);
     }
+  }, [program, anchorWallet, vault, fetchVault]);
 
-    setRecommendation(message);
-    setStatus(`Agent last ran at ${new Date().toLocaleTimeString()}`);
-    return action;
-  }, [fetchMarketData]);
-
-  const stopAgent = useCallback(() => {
-    if (agentTimerId !== null) {
-      window.clearInterval(agentTimerId);
-      setAgentTimerId(null);
+  const callAgentApi = useCallback(async (path: string, method = 'GET', body?: any) => {
+    try {
+      const response = await fetch(`${AGENT_API_URL}${path}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`${response.status} ${response.statusText}: ${text}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Agent API error', error);
+      setAgentStatus(`Agent API error: ${(error as any).message}`);
+      return null;
     }
-    setAgentRunning(false);
-    setStatus('Agent stopped.');
-  }, [agentTimerId]);
+  }, [AGENT_API_URL]);
 
-  const startAgent = useCallback(async () => {
-    if (agentRunning) return;
-    const action = await runAgentTick();
-    setAgentRunning(true);
-    setStatus(`Agent running every ${agentIntervalMinutes} minute(s). Last action: ${action}.`);
-    const timer = window.setInterval(async () => {
-      const nextAction = await runAgentTick();
-      setStatus(`Agent ran at ${new Date().toLocaleTimeString()}. Last action: ${nextAction}.`);
-    }, agentIntervalMinutes * 60 * 1000);
-    setAgentTimerId(timer);
-  }, [agentRunning, agentIntervalMinutes, runAgentTick]);
+  const refreshAgentStatus = useCallback(async () => {
+    const result = await callAgentApi('/api/agent/status');
+    if (result) {
+      setAgentRunning(result.running);
+      setAgentIntervalMinutes(result.intervalMinutes || agentIntervalMinutes);
+      setAgentStatus(result.message || 'Agent status updated.');
+      setAgentReady(true);
+      if (result.lastAction) {
+        setRecommendation(result.lastAction);
+      }
+    }
+  }, [agentIntervalMinutes, callAgentApi]);
+
+  const startRemoteAgent = useCallback(async () => {
+    const result = await callAgentApi('/api/agent/start', 'POST', {
+      intervalMinutes: agentIntervalMinutes,
+    });
+    if (result) {
+      setAgentRunning(result.running);
+      setAgentStatus(result.message);
+      setAgentReady(true);
+      if (result.lastAction) {
+        setRecommendation(result.lastAction);
+      }
+    }
+  }, [agentIntervalMinutes, callAgentApi]);
+
+  const stopRemoteAgent = useCallback(async () => {
+    const result = await callAgentApi('/api/agent/stop', 'POST');
+    if (result) {
+      setAgentRunning(result.running);
+      setAgentStatus(result.message);
+    }
+  }, [callAgentApi]);
 
   useEffect(() => {
-    return () => {
-      if (agentTimerId !== null) {
-        window.clearInterval(agentTimerId);
-      }
-    };
-  }, [agentTimerId]);
+    refreshAgentStatus();
+  }, [refreshAgentStatus]);
 
   useEffect(() => {
     fetchMarketData();
@@ -257,6 +344,50 @@ const AppContent = () => {
                   <span>Last updated</span>
                   <strong>{new Date(vault.lastUpdated.toNumber() * 1000).toLocaleString()}</strong>
                 </div>
+                <div style={{ marginTop: 16, padding: '12px', background: 'rgba(255,255,255,0.04)', borderRadius: 12 }}>
+                  <h3>Mode Control</h3>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="vaultMode"
+                        value="safe"
+                        checked={vaultMode === 'safe'}
+                        onChange={() => toggleVaultMode('safe', vaultEnabled)}
+                      />
+                      Safe Mode
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="vaultMode"
+                        value="risk"
+                        checked={vaultMode === 'risk'}
+                        onChange={() => toggleVaultMode('risk', vaultEnabled)}
+                      />
+                      Risk Mode
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <span>Agent Enabled:</span>
+                    <button
+                      onClick={() => toggleVaultMode(vaultMode, !vaultEnabled)}
+                      style={{
+                        background: vaultEnabled ? '#16a34a' : '#7c3aed',
+                        color: '#fff',
+                        border: 'none',
+                        padding: '8px 16px',
+                        borderRadius: 8,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {vaultEnabled ? 'ON' : 'OFF'}
+                    </button>
+                    <span style={{ fontSize: '0.9em', color: '#9ca3af' }}>
+                      {vaultMode === 'safe' ? '🛡️ Preserve balance' : '⚡ Active trading'}
+                    </span>
+                  </div>
+                </div>
                 <div style={{ marginTop: 16 }}>
                   <h3>Holdings</h3>
                   {vault.holdings.length === 0 ? (
@@ -290,7 +421,7 @@ const AppContent = () => {
         <h2>AI Agent</h2>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
           <button
-            onClick={agentRunning ? stopAgent : startAgent}
+            onClick={agentRunning ? stopRemoteAgent : startRemoteAgent}
             style={{
               background: agentRunning ? '#dc2626' : '#16a34a',
               color: '#fff',
@@ -314,11 +445,35 @@ const AppContent = () => {
           </label>
         </div>
         <p>{recommendation}</p>
-        <p>Agent status is controlled from this page and runs locally in the browser.</p>
+        <p>Agent status is controlled from this page and runs on your backend service.</p>
         <pre style={{ background: 'rgba(255,255,255,0.04)', padding: 12, borderRadius: 12, whiteSpace: 'pre-wrap' }}>
           Agent interval: {agentIntervalMinutes} minute(s)
-          {'\n'}Status: {status}
+          {'\n'}Status: {agentStatus}
+          {'\n'}Backend URL: {AGENT_API_URL}
         </pre>
+        {!agentReady && (
+          <p style={{ color: '#f59e0b' }}>Make sure the AI agent backend is running at {AGENT_API_URL}</p>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Diagnostic Info</h2>
+        <div style={{ fontSize: '0.9em', fontFamily: 'monospace', color: '#9ca3af' }}>
+          <div>Network: Devnet</div>
+          <div>Program: {PROGRAM_ID.toBase58().slice(0, 12)}...</div>
+          <div>Wallet: {wallet.connected ? anchorWallet?.publicKey?.toBase58().slice(0, 12) + '...' : 'Not connected'}</div>
+          {wallet.connected && anchorWallet && (
+            <div 
+              style={{ cursor: 'pointer', marginTop: 8 }}
+              onClick={async () => {
+                const balance = await connection.getBalance(anchorWallet.publicKey!);
+                setStatus(`Balance: ${(balance / 1e9).toFixed(4)} SOL`);
+              }}
+            >
+              💾 Click to check wallet balance
+            </div>
+          )}
+        </div>
       </section>
 
       <section className="card">
