@@ -120,10 +120,75 @@ const ensureVaultExists = async (owner: PublicKey) => {
 };
 
 const getMarketData = async () => {
-  const response = await axios.get(
-    'https://api.coingecko.com/api/v3/simple/price?ids=solana,raydium,orca&vs_currencies=usd&include_24hr_change=true',
-  );
-  return response.data;
+  const emptyMarket = {
+    solana: { usd: 0, usd_24hr_change: 0 },
+    raydium: { usd: 0, usd_24hr_change: 0 },
+    orca: { usd: 0, usd_24hr_change: 0 },
+  };
+
+  const parseCoingecko = (data: any) => ({
+    solana: {
+      usd: Number(data?.solana?.usd ?? 0),
+      usd_24hr_change: Number(data?.solana?.usd_24hr_change ?? 0),
+    },
+    raydium: {
+      usd: Number(data?.raydium?.usd ?? 0),
+      usd_24hr_change: Number(data?.raydium?.usd_24hr_change ?? 0),
+    },
+    orca: {
+      usd: Number(data?.orca?.usd ?? 0),
+      usd_24hr_change: Number(data?.orca?.usd_24hr_change ?? 0),
+    },
+  });
+
+  const parseJupiter = (data: any) => ({
+    solana: {
+      usd: Number(data?.data?.SOL?.price ?? 0),
+      usd_24hr_change: 0,
+    },
+    raydium: {
+      usd: Number(data?.data?.RAY?.price ?? 0),
+      usd_24hr_change: 0,
+    },
+    orca: {
+      usd: Number(data?.data?.ORCA?.price ?? 0),
+      usd_24hr_change: 0,
+    },
+  });
+
+  const hasAnyPrice = (market: any) => [market?.solana?.usd, market?.raydium?.usd, market?.orca?.usd]
+    .some((value) => Number.isFinite(value) && Number(value) > 0);
+
+  try {
+    const response = await axios.get(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana,raydium,orca&vs_currencies=usd&include_24hr_change=true',
+      { timeout: 12000 },
+    );
+    const parsed = parseCoingecko(response.data);
+    if (!hasAnyPrice(parsed)) {
+      throw new Error('CoinGecko returned no valid prices');
+    }
+    marketDataError = null;
+    cachedMarketSnapshot = parsed;
+    return parsed;
+  } catch (error) {
+    try {
+      const response = await axios.get('https://price.jup.ag/v6/price?ids=SOL,RAY,ORCA', { timeout: 12000 });
+      const parsed = parseJupiter(response.data);
+      if (!hasAnyPrice(parsed)) {
+        throw new Error('Jupiter returned no valid prices');
+      }
+      marketDataError = 'Primary market feed unavailable (CoinGecko). Using Jupiter fallback.';
+      cachedMarketSnapshot = parsed;
+      return parsed;
+    } catch (fallbackError) {
+      marketDataError = formatProviderError('MarketData', fallbackError);
+      if (hasAnyPrice(cachedMarketSnapshot)) {
+        return cachedMarketSnapshot;
+      }
+      return emptyMarket;
+    }
+  }
 };
 
 const formatProviderError = (provider: string, error: unknown): string => {
@@ -317,8 +382,14 @@ let lastError: string | null = null;
 let openRouterError: string | null = null;
 let heliusError: string | null = null;
 let birdeyeError: string | null = null;
+let marketDataError: string | null = null;
 let strategy: TradingStrategy = 'auto';
 const tradeHistory: TradeRecord[] = [];
+let cachedMarketSnapshot: any = {
+  solana: { usd: 0, usd_24hr_change: 0 },
+  raydium: { usd: 0, usd_24hr_change: 0 },
+  orca: { usd: 0, usd_24hr_change: 0 },
+};
 
 const pushTradeRecord = (record: TradeRecord) => {
   tradeHistory.unshift(record);
@@ -451,11 +522,13 @@ export const getAgentHealth = async () => {
       openrouter: openrouterStatus,
       helius: heliusStatus,
       birdeye: birdeyeStatus,
+      marketData: marketDataError ? 'fallback_or_error' : 'configured',
     },
     errors: {
       openrouter: openRouterError,
       helius: heliusError,
       birdeye: birdeyeError,
+      marketData: marketDataError,
     },
     lastError,
   };

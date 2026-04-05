@@ -58,11 +58,13 @@ interface AgentHealth {
     openrouter?: string;
     helius?: string;
     birdeye?: string;
+    marketData?: string;
   };
   errors?: {
     openrouter?: string | null;
     helius?: string | null;
     birdeye?: string | null;
+    marketData?: string | null;
   };
   lastError?: string | null;
 }
@@ -1148,6 +1150,7 @@ const AppContent = () => {
           {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
           {'\n'}BirdEye: {agentHealth?.checks?.birdeye || 'unknown'}
+          {'\n'}MarketData: {agentHealth?.checks?.marketData || 'unknown'}
           {'\n'}Agent SOL: {typeof agentHealth?.agentBalanceSol === 'number' ? agentHealth.agentBalanceSol.toFixed(4) : 'unknown'}
         </pre>
         <h3 style={{ marginTop: 18 }}>Recent Agent Trades</h3>
@@ -1179,12 +1182,13 @@ const AppContent = () => {
             ))}
           </div>
         )}
-        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.lastError) && (
+        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
           <div style={{ marginTop: 10, color: '#f59e0b' }}>
             <div>API diagnostics:</div>
             {agentHealth?.errors?.openrouter && <div>OpenRouter error: {agentHealth.errors.openrouter}</div>}
             {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
             {agentHealth?.errors?.birdeye && <div>BirdEye error: {agentHealth.errors.birdeye}</div>}
+            {agentHealth?.errors?.marketData && <div>MarketData error: {agentHealth.errors.marketData}</div>}
             {agentHealth?.lastError && <div>Last agent run error: {agentHealth.lastError}</div>}
           </div>
         )}
