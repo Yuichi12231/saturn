@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: saturn-ai-agent
+    runtime: node
+    rootDir: ai-agent
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/agent/status
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: AGENT_WALLET_SECRET_KEY
+        sync: false

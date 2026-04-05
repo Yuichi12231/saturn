@@ -112,6 +112,25 @@ Do not commit your `.env` file to source control.
 - Frontend: build the static site with `npm run deploy:app` and deploy the `app/dist` folder to your hosting platform (Vercel, Netlify, or any static site host).
 - AI agent: deploy as a separate service or worker that runs `npm run deploy:agent` with the required environment variables configured as secrets.
 
+### Permanent AI Agent URL (Render)
+
+This repository includes a Render Blueprint in `render.yaml`.
+
+1. Open:
+   `https://render.com/deploy?repo=https://github.com/Yuichi12231/saturn`
+2. Select service `saturn-ai-agent`.
+3. Fill required secrets:
+   - `OPENAI_API_KEY`
+   - `HELIUS_API_KEY`
+   - `BIRDEYE_API_KEY`
+   - `AGENT_WALLET_SECRET_KEY`
+4. Deploy.
+5. Copy the Render service URL, e.g. `https://saturn-ai-agent.onrender.com`.
+6. Set frontend env var in Vercel:
+   - Name: `VITE_AGENT_API_URL`
+   - Value: your Render URL
+7. Redeploy Vercel frontend.
+
 ## Notes
 
 - The smart contract uses a PDA vault account derived from `['vault', authority]`.

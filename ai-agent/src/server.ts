@@ -6,7 +6,7 @@ import { getAgentState, runAgentOnce, startAgentSchedule, stopAgentSchedule } fr
 dotenv.config();
 
 const app = express();
-const port = Number(process.env.AGENT_PORT || 3001);
+const port = Number(process.env.PORT || process.env.AGENT_PORT || 3001);
 
 app.use(cors());
 app.use(express.json());
