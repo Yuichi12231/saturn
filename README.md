@@ -136,19 +136,20 @@ This repository includes a Render Blueprint in `render.yaml`.
 If Render asks for billing details in your region, you can deploy `ai-agent` on Railway.
 
 1. Open Railway and create a new project from GitHub repo `Yuichi12231/saturn`.
-2. For the service settings, set **Root Directory** to `ai-agent`.
-3. Deploy using `ai-agent/Dockerfile` (recommended for monorepo stability).
-4. `ai-agent/railway.json` provides healthcheck/restart settings.
-5. Add required environment variables:
+2. If Railway UI supports **Root Directory**, set it to `ai-agent`.
+3. If Railway UI does **not** show Root Directory (common in some layouts), just deploy from repo root:
+   - The root `Dockerfile` is configured to run `ai-agent`.
+   - Root `railway.json` sets healthcheck/restart policy.
+4. Add required environment variables:
    - `OPENAI_API_KEY`
    - `HELIUS_API_KEY`
    - `BIRDEYE_API_KEY`
    - `AGENT_WALLET_SECRET_KEY`
-6. Deploy and copy the generated Railway URL.
-7. Verify backend:
+5. Deploy and copy the generated Railway URL.
+6. Verify backend:
    - `https://<your-railway-domain>/api/agent/status`
-8. Set `VITE_AGENT_API_URL` in Vercel to that Railway URL.
-9. Redeploy Vercel frontend.
+7. Set `VITE_AGENT_API_URL` in Vercel to that Railway URL.
+8. Redeploy Vercel frontend.
 
 ## Notes
 
