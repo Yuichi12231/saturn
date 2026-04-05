@@ -301,7 +301,15 @@ const AppContent = () => {
       return true;
     } catch (error) {
       console.error('Failed to set agent authority:', error);
-      setStatus(`Failed to sync agent authority: ${extractErrorMessage(error)}`);
+      const message = extractErrorMessage(error);
+      if (/fallback functions are not supported/i.test(message)) {
+        setStatus(
+          'Failed to sync agent authority: on-chain program is outdated (setAgentAuthority missing). ' +
+          'Redeploy program and upgrade IDL on devnet, then retry.'
+        );
+      } else {
+        setStatus(`Failed to sync agent authority: ${message}`);
+      }
       return false;
     } finally {
       setLoading(false);
