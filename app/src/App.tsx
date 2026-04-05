@@ -1152,7 +1152,9 @@ const AppContent = () => {
         </pre>
         <h3 style={{ marginTop: 18 }}>Recent Agent Trades</h3>
         {agentTrades.length === 0 ? (
-          <p style={{ color: '#9ca3af' }}>No trade history yet. Start agent to see autonomous decisions.</p>
+          <p style={{ color: '#9ca3af' }}>
+            No trade history yet. Start agent to see autonomous decisions. Note: history is in-memory and resets when backend restarts/redeploys.
+          </p>
         ) : (
           <div style={{ display: 'grid', gap: 8 }}>
             {agentTrades.slice(0, 8).map((trade) => (

@@ -126,6 +126,41 @@ const getMarketData = async () => {
   return response.data;
 };
 
+const formatProviderError = (provider: string, error: unknown): string => {
+  const axiosError = error as any;
+  const status = axiosError?.response?.status;
+  const data = axiosError?.response?.data;
+
+  if (provider === 'BirdEye' && status === 521) {
+    return 'BirdEye service unavailable (HTTP 521). The provider host is temporarily down.';
+  }
+
+  let message = '';
+  if (typeof data?.error?.message === 'string') {
+    message = data.error.message;
+  } else if (typeof data?.error === 'string') {
+    message = data.error;
+  } else if (typeof data?.message === 'string') {
+    message = data.message;
+  } else if (typeof data === 'string') {
+    message = data;
+  } else if (data && typeof data === 'object') {
+    message = JSON.stringify(data);
+  } else if (typeof axiosError?.message === 'string') {
+    message = axiosError.message;
+  } else {
+    message = `${provider} request failed`;
+  }
+
+  const compact = message
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const short = compact.length > 240 ? `${compact.slice(0, 240)}...` : compact;
+  return status ? `${provider} HTTP ${status}: ${short}` : `${provider}: ${short}`;
+};
+
 const getHeliusSignals = async () => {
   if (!HELIUS_API_KEY) {
     heliusError = 'HELIUS_API_KEY is not configured';
@@ -152,7 +187,7 @@ const getHeliusSignals = async () => {
     return response.data;
   } catch (error) {
     const axiosError = error as any;
-    heliusError = String(axiosError.response?.data?.error || axiosError.response?.data || axiosError.message || 'Helius request failed');
+    heliusError = formatProviderError('Helius', error);
     console.warn('Helius API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
@@ -175,7 +210,7 @@ const getBirdEyeMarket = async () => {
     return response.data;
   } catch (error) {
     const axiosError = error as any;
-    birdeyeError = String(axiosError.response?.data?.message || axiosError.response?.data || axiosError.message || 'BirdEye request failed');
+    birdeyeError = formatProviderError('BirdEye', error);
     console.warn('BirdEye API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
@@ -231,7 +266,7 @@ const askLlm = async (prompt: string) => {
     }
   } catch (error) {
     const axiosError = error as any;
-    openRouterError = String(axiosError.response?.data?.error?.message || axiosError.response?.data || axiosError.message || 'OpenRouter request failed');
+    openRouterError = formatProviderError('OpenRouter', error);
     console.warn('OpenRouter request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return { action: 'hold', reason: 'OpenRouter request failed.' };
   }
