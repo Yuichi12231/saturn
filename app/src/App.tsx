@@ -59,7 +59,11 @@ const AppContent = () => {
   const [vaultMode, setVaultMode] = useState<'safe' | 'risk'>('safe');
   const [vaultEnabled, setVaultEnabled] = useState(false);
 
-  const AGENT_API_URL = import.meta.env.VITE_AGENT_API_URL || 'http://localhost:3001';
+  const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || '').trim();
+  const agentBackendConfigured = AGENT_API_URL.length > 0;
+  const runningHostedFrontend = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const backendLooksLocalhost = AGENT_API_URL.includes('localhost') || AGENT_API_URL.includes('127.0.0.1');
+  const backendUrlMismatch = runningHostedFrontend && backendLooksLocalhost;
 
   const connection = useMemo(() => new Connection(endpoint), []);
 
@@ -269,6 +273,16 @@ const AppContent = () => {
   }, [program, anchorWallet, vault, fetchVault]);
 
   const callAgentApi = useCallback(async (path: string, method = 'GET', body?: any) => {
+    if (!agentBackendConfigured) {
+      setAgentStatus('Agent backend URL is not configured. Set VITE_AGENT_API_URL in frontend environment.');
+      return null;
+    }
+
+    if (backendUrlMismatch) {
+      setAgentStatus('Frontend is hosted, but backend URL points to localhost. Set VITE_AGENT_API_URL to a public HTTPS backend URL.');
+      return null;
+    }
+
     try {
       const response = await fetch(`${AGENT_API_URL}${path}`, {
         method,
@@ -287,7 +301,7 @@ const AppContent = () => {
       setAgentStatus(`Agent API error: ${(error as any).message}`);
       return null;
     }
-  }, [AGENT_API_URL]);
+  }, [AGENT_API_URL, agentBackendConfigured, backendUrlMismatch]);
 
   const refreshAgentStatus = useCallback(async () => {
     const result = await callAgentApi('/api/agent/status');
@@ -308,6 +322,16 @@ const AppContent = () => {
   const startRemoteAgent = useCallback(async () => {
     if (!anchorWallet || !program) {
       setAgentStatus('Connect wallet first to select your vault owner address.');
+      return;
+    }
+
+    if (!agentBackendConfigured) {
+      setStatus('Set VITE_AGENT_API_URL to your public backend agent service, then redeploy frontend.');
+      return;
+    }
+
+    if (backendUrlMismatch) {
+      setStatus('Backend URL is localhost but frontend is hosted. Use a public backend URL in VITE_AGENT_API_URL.');
       return;
     }
 
@@ -353,7 +377,7 @@ const AppContent = () => {
         setRecommendation(result.lastAction);
       }
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
@@ -540,10 +564,20 @@ const AppContent = () => {
           Agent interval: {agentIntervalMinutes} minute(s)
           {'\n'}Status: {agentStatus}
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
-          {'\n'}Backend URL: {AGENT_API_URL}
+          {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
         </pre>
+        {!agentBackendConfigured && (
+          <p style={{ color: '#f59e0b' }}>
+            Set VITE_AGENT_API_URL in frontend environment (Vercel Project Settings → Environment Variables), then redeploy.
+          </p>
+        )}
+        {backendUrlMismatch && (
+          <p style={{ color: '#f59e0b' }}>
+            Your hosted frontend cannot reach localhost backend. Use a public HTTPS URL for VITE_AGENT_API_URL.
+          </p>
+        )}
         {!agentReady && (
-          <p style={{ color: '#f59e0b' }}>Make sure the AI agent backend is running at {AGENT_API_URL}</p>
+          <p style={{ color: '#f59e0b' }}>Make sure the AI agent backend is running at {AGENT_API_URL || '[VITE_AGENT_API_URL not set]'}</p>
         )}
       </section>
 
