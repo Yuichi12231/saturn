@@ -141,18 +141,31 @@ const getMarketData = async () => {
 
   const parseJupiter = (data: any) => ({
     solana: {
-      usd: Number(data?.data?.SOL?.price ?? 0),
+      usd: Number(data?.data?.SOL?.price ?? data?.data?.SOL?.usdPrice ?? 0),
       usd_24hr_change: 0,
     },
     raydium: {
-      usd: Number(data?.data?.RAY?.price ?? 0),
+      usd: Number(data?.data?.RAY?.price ?? data?.data?.RAY?.usdPrice ?? 0),
       usd_24hr_change: 0,
     },
     orca: {
-      usd: Number(data?.data?.ORCA?.price ?? 0),
+      usd: Number(data?.data?.ORCA?.price ?? data?.data?.ORCA?.usdPrice ?? 0),
       usd_24hr_change: 0,
     },
   });
+
+  const parseDexScreener = (data: any) => {
+    const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
+    const findPrice = (symbol: string) => {
+      const pair = pairs.find((p: any) => String(p?.baseToken?.symbol || '').toUpperCase() === symbol);
+      return Number(pair?.priceUsd ?? 0);
+    };
+    return {
+      solana: { usd: findPrice('SOL'), usd_24hr_change: 0 },
+      raydium: { usd: findPrice('RAY'), usd_24hr_change: 0 },
+      orca: { usd: findPrice('ORCA'), usd_24hr_change: 0 },
+    };
+  };
 
   const hasAnyPrice = (market: any) => [market?.solana?.usd, market?.raydium?.usd, market?.orca?.usd]
     .some((value) => Number.isFinite(value) && Number(value) > 0);
@@ -171,7 +184,7 @@ const getMarketData = async () => {
     return parsed;
   } catch (error) {
     try {
-      const response = await axios.get('https://price.jup.ag/v6/price?ids=SOL,RAY,ORCA', { timeout: 12000 });
+      const response = await axios.get('https://lite-api.jup.ag/price/v2?ids=SOL,RAY,ORCA', { timeout: 12000 });
       const parsed = parseJupiter(response.data);
       if (!hasAnyPrice(parsed)) {
         throw new Error('Jupiter returned no valid prices');
@@ -180,11 +193,25 @@ const getMarketData = async () => {
       cachedMarketSnapshot = parsed;
       return parsed;
     } catch (fallbackError) {
-      marketDataError = formatProviderError('MarketData', fallbackError);
-      if (hasAnyPrice(cachedMarketSnapshot)) {
-        return cachedMarketSnapshot;
+      try {
+        const response = await axios.get(
+          'https://api.dexscreener.com/latest/dex/search/?q=SOL%20RAY%20ORCA',
+          { timeout: 12000 },
+        );
+        const parsed = parseDexScreener(response.data);
+        if (!hasAnyPrice(parsed)) {
+          throw new Error('DexScreener returned no valid prices');
+        }
+        marketDataError = 'Primary and Jupiter feeds unavailable. Using DexScreener fallback.';
+        cachedMarketSnapshot = parsed;
+        return parsed;
+      } catch (secondFallbackError) {
+        marketDataError = formatProviderError('MarketData', secondFallbackError);
+        if (hasAnyPrice(cachedMarketSnapshot)) {
+          return cachedMarketSnapshot;
+        }
+        return emptyMarket;
       }
-      return emptyMarket;
     }
   }
 };
@@ -231,21 +258,14 @@ const getHeliusSignals = async () => {
   }
 
   try {
-    const url = 'https://api.helius.xyz/v0/addresses/transactions';
-    const response = await axios.post(
-      url,
-      {
-        addresses: [keypair.publicKey.toBase58()],
+    const url = `https://api.helius.xyz/v0/addresses/${keypair.publicKey.toBase58()}/transactions`;
+    const response = await axios.get(url, {
+      params: {
+        'api-key': HELIUS_API_KEY,
         limit: 5,
       },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': HELIUS_API_KEY,
-        },
-        timeout: 15000,
-      },
-    );
+      timeout: 15000,
+    });
     heliusError = null;
     return response.data;
   } catch (error) {
@@ -303,7 +323,7 @@ const parseJsonFromModelText = (text: string): any => {
 const askLlm = async (prompt: string) => {
   if (!GEMINI_API_KEY) {
     geminiError = 'GEMINI_API_KEY is not configured';
-    return { action: 'hold', reason: 'Gemini API key is not configured.' };
+    return null;
   }
 
   try {
@@ -350,7 +370,7 @@ const askLlm = async (prompt: string) => {
     const axiosError = error as any;
     geminiError = formatProviderError('Gemini', error);
     console.warn('Gemini request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
-    return { action: 'hold', reason: 'Gemini request failed.' };
+    return null;
   }
 };
 
@@ -474,6 +494,9 @@ const decideWithRules = (market: any): Decision => {
 const decideWithLlm = async (market: any, heliusSignals: any, birdeyeMarket: any): Promise<Decision | null> => {
   const prompt = buildPrompt(market, heliusSignals, birdeyeMarket);
   const decision = await askLlm(prompt);
+  if (!decision || typeof decision !== 'object') {
+    return null;
+  }
 
   const action = typeof decision.action === 'string' && ['buy', 'sell', 'hold'].includes(decision.action.toLowerCase())
     ? decision.action.toLowerCase() as 'buy' | 'sell' | 'hold'
