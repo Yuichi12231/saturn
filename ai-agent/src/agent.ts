@@ -33,10 +33,12 @@ const VALIDATED_MODEL = AVAILABLE_MODELS.includes(OPENROUTER_MODEL)
   : AVAILABLE_MODELS[0];
 
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
+const AGENT_EXECUTION_MODE = 'onchain';
 
 // Log environment configuration at startup
 console.log('[AGENT INIT] Environment Variables:');
 console.log(`  AGENT_DEMO_MODE=${process.env.AGENT_DEMO_MODE} (parsed as: ${AGENT_DEMO_MODE})`);
+console.log(`  AGENT_EXECUTION_MODE=${AGENT_EXECUTION_MODE} (demo simulation disabled)`);
 console.log(`  OPENROUTER_MODEL=${OPENROUTER_MODEL} (validated: ${VALIDATED_MODEL})`);
 console.log(`  Available models: ${AVAILABLE_MODELS.join(', ')}`);
 console.log(`  OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY ? '***' : 'NOT SET'}`);
@@ -75,7 +77,7 @@ const throttleOpenRouterRequest = async () => {
   lastOpenRouterRequestTime = Date.now();
 };
 
-// Jupiter v6 API (mainnet; gracefully skipped with paper-trade fallback on devnet)
+// Jupiter v6 API
 const JUPITER_API = 'https://quote-api.jup.ag/v6';
 // Mainnet mint addresses for Jupiter routes
 const JUPITER_MINTS: Record<string, string> = {
@@ -400,7 +402,7 @@ const getHeliusSignals = async () => {
   }
 };
 
-// ── Jupiter v6 real swap (mainnet; falls back to paper-trade on devnet) ────────
+// ── Jupiter v6 real swap ───────────────────────────────────────────────────────
 const executeJupiterSwap = async (
   inputSymbol: string,
   outputSymbol: string,
@@ -613,36 +615,6 @@ const SYMBOL_MARKET_KEY: Record<string, string> = {
 const getTokenPriceUsd = (symbol: string, market: any): number =>
   Number(market?.[SYMBOL_MARKET_KEY[symbol]]?.usd || 0) || 1;
 
-const getDemoDecision = (market: any): Decision => {
-  const openPositions = Object.keys(agentPortfolio) as Array<'SOL' | 'RAY' | 'ORCA'>;
-  if (openPositions.length > 0) {
-    const sym = openPositions[0];
-    const pos = agentPortfolio[sym];
-    return {
-      action: 'sell',
-      symbol: sym,
-      amount: Math.max(1, Math.round(pos?.amountUnits || 1)),
-      riskScore: 45,
-      reason: 'Demo mode: closing an existing position to demonstrate sell flow.',
-      source: 'rule',
-    };
-  }
-
-  const entries = [
-    { symbol: 'SOL' as const, change: Number(market?.solana?.usd_24hr_change ?? 0) },
-    { symbol: 'RAY' as const, change: Number(market?.raydium?.usd_24hr_change ?? 0) },
-    { symbol: 'ORCA' as const, change: Number(market?.orca?.usd_24hr_change ?? 0) },
-  ].sort((a, b) => b.change - a.change);
-
-  return {
-    action: 'buy',
-    symbol: entries[0]?.symbol || 'SOL',
-    amount: 2,
-    riskScore: 40,
-    reason: 'Demo mode: opening a position to demonstrate buy flow.',
-    source: 'rule',
-  };
-};
 // ──────────────────────────────────────────────────────────────────────────────
 
 let scheduledAgent: ReturnType<typeof setInterval> | null = null;
@@ -807,6 +779,7 @@ export const getAgentHealth = async () => {
       openrouterKeySource,
       openrouterModel: VALIDATED_MODEL,
       demoMode: AGENT_DEMO_MODE,
+      executionMode: AGENT_EXECUTION_MODE,
       heliusConfigured: Boolean(HELIUS_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
     },
@@ -825,30 +798,13 @@ export const getAgentHealth = async () => {
 };
 
 export const runAgentOnce = async () => {
-  // In demo mode, vault is not required
-  if (!AGENT_DEMO_MODE) {
-    if (!currentVaultOwner) {
-      throw new Error('Vault owner is not set. Start the agent from UI with a connected wallet first.');
-    }
+  if (!currentVaultOwner) {
+    throw new Error('Vault owner is not set. Start the agent from UI with a connected wallet first.');
   }
 
   await ensureAgentHasFunds();
-  
-  // Only validate vault if not in demo mode
-  let vaultPda: PublicKey;
-  if (!AGENT_DEMO_MODE) {
-    if (!currentVaultOwner) {
-      throw new Error('Vault owner is not set in non-demo mode.');
-    }
-    vaultPda = await ensureVaultExists(currentVaultOwner);
-  } else {
-    // In demo mode, use a dummy vault owner for portfolio tracking
-    if (!currentVaultOwner) {
-      currentVaultOwner = keypair.publicKey; // Use agent's own wallet as placeholder
-    }
-    vaultPda = await deriveVaultPda(currentVaultOwner);
-    console.log(`Demo mode: using simulated vault PDA ${vaultPda.toBase58()} (no on-chain validation)`);
-  }
+
+  const vaultPda: PublicKey = await ensureVaultExists(currentVaultOwner);
   
   lastError = null;
 
@@ -858,9 +814,6 @@ export const runAgentOnce = async () => {
   let chosen: Decision | null = await decideWithLlm(market, heliusSignals);
   if (!chosen) {
     chosen = decideWithRules(market);
-  }
-  if (AGENT_DEMO_MODE) {
-    chosen = getDemoDecision(market);
   }
 
   const action = chosen.action;
@@ -909,59 +862,42 @@ export const runAgentOnce = async () => {
     return { action: 'hold', message: skipMsg };
   }
 
-  // ── Try real Jupiter swap (silently falls back to paper-trade on devnet) ───
+  // ── Real swap only (no simulation fallback) ───────────────────────────────
   const tradeSolAmount = Math.max(amountValue * TRADE_SOL_PER_UNIT, 0.001);
   const tradeLamports = Math.round(tradeSolAmount * 1e9);
   let swapTx: string | undefined;
-  let swapMode: 'real' | 'paper' = 'paper';
+  let swapMode: 'real' | 'paper' = 'real';
 
   if (action === 'buy') {
-    try {
-      const agentBal = await connection.getBalance(keypair.publicKey);
-      if (agentBal > tradeLamports + 10_000_000) {
-        swapTx = await executeJupiterSwap('SOL', symbol, tradeLamports);
-        swapMode = 'real';
-        console.log(`Jupiter BUY ${symbol}: ${swapTx}`);
-      }
-    } catch (swapErr) {
-      console.log(`Jupiter BUY unavailable (paper-trade): ${(swapErr as any)?.message?.slice(0, 120)}`);
+    const agentBal = await connection.getBalance(keypair.publicKey);
+    if (agentBal <= tradeLamports + 10_000_000) {
+      throw new Error(`Insufficient SOL for on-chain BUY ${symbol}. Need > ${(tradeLamports + 10_000_000) / 1e9} SOL including fee buffer.`);
     }
+    swapTx = await executeJupiterSwap('SOL', symbol, tradeLamports);
+    console.log(`Jupiter BUY ${symbol}: ${swapTx}`);
   } else if (action === 'sell') {
-    try {
-      // For real sell, we'd need actual token balance — paper portfolio tracks units
-      // Real swap: sell all units we think we hold at current SOL equivalent
-      swapTx = await executeJupiterSwap(symbol, 'SOL', tradeLamports);
-      swapMode = 'real';
-      console.log(`Jupiter SELL ${symbol}: ${swapTx}`);
-    } catch (swapErr) {
-      console.log(`Jupiter SELL unavailable (paper-trade): ${(swapErr as any)?.message?.slice(0, 120)}`);
-    }
+    // Sell uses SOL-sized amount approximation; if route/balance missing, fail (no simulation).
+    swapTx = await executeJupiterSwap(symbol, 'SOL', tradeLamports);
+    console.log(`Jupiter SELL ${symbol}: ${swapTx}`);
   }
   // ──────────────────────────────────────────────────────────────────────────
 
   try {
     let finalTx: string | undefined;
-    
-    // Only call on-chain instruction in non-demo mode
-    if (!AGENT_DEMO_MODE) {
-      const tx = await program.rpc.executeTrade(
-        mint,
-        new anchor.BN(amountValue),
-        action === 'buy',
-        newRiskScore,
-        {
-          accounts: {
-            vault: vaultPda,
-            authority: keypair.publicKey,
-          },
+
+    const tx = await program.rpc.executeTrade(
+      mint,
+      new anchor.BN(amountValue),
+      action === 'buy',
+      newRiskScore,
+      {
+        accounts: {
+          vault: vaultPda,
+          authority: keypair.publicKey,
         },
-      );
-      finalTx = swapTx || tx;
-    } else {
-      // In demo mode, just use Jupiter swap tx if available
-      finalTx = swapTx || `demo-${Date.now()}`;
-      console.log(`Demo mode: skipped on-chain executeTrade, using ${finalTx}`);
-    }
+      },
+    );
+    finalTx = swapTx || tx;
 
     // ── Update portfolio ───────────────────────────────────────────────────
     const solPriceUsd = getTokenPriceUsd('SOL', market);
