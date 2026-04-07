@@ -887,11 +887,6 @@ const AppContent = () => {
   }, [callAgentApi]);
 
   const startRemoteAgent = useCallback(async () => {
-    if (!anchorWallet || !program) {
-      setAgentStatus('Connect wallet first to select your vault owner address.');
-      return;
-    }
-
     if (!agentBackendConfigured) {
       setStatus('Set VITE_AGENT_API_URL to your public backend agent service, then redeploy frontend.');
       return;
@@ -902,40 +897,47 @@ const AppContent = () => {
       return;
     }
 
-    if (!vault) {
-      setStatus('Create vault first before starting the agent.');
-      return;
-    }
+    const isDemoMode = agentHealth?.env?.demoMode === true;
 
-    let agentWallet = backendAgentWallet;
-    if (!agentWallet) {
-      const statusResult = await callAgentApi('/api/agent/status');
-      if (statusResult?.agentPublicKey) {
-        agentWallet = statusResult.agentPublicKey;
-        setBackendAgentWallet(statusResult.agentPublicKey);
-      }
-    }
-
-    if (!agentWallet) {
-      setStatus('Unable to read backend agent wallet. Ensure backend is running.');
-      return;
-    }
-
-    if (vault.agentAuthority.toBase58() !== agentWallet) {
-      const synced = await setVaultAgentAuthority(agentWallet);
-      if (!synced) {
+    if (!isDemoMode) {
+      // Non-demo mode: need wallet + vault + on-chain authority sync
+      if (!anchorWallet || !program) {
+        setAgentStatus('Connect wallet first to select your vault owner address.');
         return;
       }
-      setStatus('Agent authority synced. Starting agent...');
+      if (!vault) {
+        setStatus('Create vault first before starting the agent.');
+        return;
+      }
+
+      let agentWallet = backendAgentWallet;
+      if (!agentWallet) {
+        const statusResult = await callAgentApi('/api/agent/status');
+        if (statusResult?.agentPublicKey) {
+          agentWallet = statusResult.agentPublicKey;
+          setBackendAgentWallet(statusResult.agentPublicKey);
+        }
+      }
+      if (!agentWallet) {
+        setStatus('Unable to read backend agent wallet. Ensure backend is running.');
+        return;
+      }
+      if (vault.agentAuthority.toBase58() !== agentWallet) {
+        const synced = await setVaultAgentAuthority(agentWallet);
+        if (!synced) {
+          return;
+        }
+        setStatus('Agent authority synced. Starting agent...');
+      }
+      if (!vaultEnabled) {
+        await toggleVaultMode(vaultMode, true);
+      }
     }
 
-    if (!vaultEnabled) {
-      await toggleVaultMode(vaultMode, true);
-    }
-
+    const vaultOwner = anchorWallet?.publicKey?.toBase58() ?? agentHealth?.vaultOwner ?? '';
     const result = await callAgentApi('/api/agent/start', 'POST', {
       intervalMinutes: agentIntervalMinutes,
-      vaultOwner: anchorWallet.publicKey.toBase58(),
+      vaultOwner,
     });
     if (result) {
       setAgentRunning(Boolean(result.running));
@@ -952,7 +954,7 @@ const AppContent = () => {
       }
       await refreshAgentTrades();
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades]);
+  }, [agentHealth, agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
@@ -972,14 +974,16 @@ const AppContent = () => {
   }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
 
   useEffect(() => {
+    // Poll faster when agent is running so new trades appear quickly
+    const pollMs = agentRunning ? 5000 : 30000;
     const interval = setInterval(() => {
       refreshAgentStatus();
       refreshAgentHealth();
       refreshAgentTrades();
-    }, 30000);
+    }, pollMs);
 
     return () => clearInterval(interval);
-  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
+  }, [agentRunning, refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
 
   useEffect(() => {
     fetchMarketData();
@@ -1424,7 +1428,14 @@ const AppContent = () => {
         )}
         {/* ── Recent Trades ─────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 4 }}>
-          <h3 style={{ margin: 0 }}>Recent Agent Trades</h3>
+          <h3 style={{ margin: 0 }}>
+            Recent Agent Trades
+            {agentRunning && (
+              <span style={{ marginLeft: 8, fontSize: '0.72em', background: 'rgba(34,197,94,0.12)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.28)', borderRadius: 999, padding: '2px 8px', verticalAlign: 'middle' }}>
+                ● live
+              </span>
+            )}
+          </h3>
           {agentTrades.length > 0 && (
             <button
               onClick={clearAllTrades}
