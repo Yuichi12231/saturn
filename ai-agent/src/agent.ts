@@ -669,7 +669,7 @@ const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
         messages: [
           {
             role: 'system',
-            content: 'You are a Solana trading agent. You MUST respond with ONLY a valid JSON object — no explanation, no markdown, no reasoning text. Output strictly: {"action":"buy"|"sell"|"hold","symbol":"SOL"|"RAY"|"ORCA","amount":1-10,"riskScore":1-99,"reason":"..."}',
+            content: 'You are a Solana DeFi trading agent managing a portfolio of 12 lab tokens. Analyze price trends, SMA crossovers, and momentum to make smart trading decisions. You MUST respond with ONLY a valid JSON object — no explanation, no markdown, no reasoning text. Output strictly: {"action":"buy"|"sell"|"hold","symbol":"SOLX"|"RAYX"|"ORCX"|"ATM"|"LQD"|"NOVA"|"BETA"|"GAM"|"ALF"|"DEL"|"OME"|"SIG","amount":1-10,"riskScore":1-99,"reason":"..."}',
           },
           { role: 'user', content: prompt },
         ],
@@ -736,18 +736,43 @@ const buildPrompt = (market: any, heliusSignals: any) => {
       }))
     : heliusSignals;
 
-  const portfolioLines = (Object.entries(agentPortfolio) as [string, Position][])
-    .map(([sym, pos]) => `${sym}: ${pos.amountUnits.toFixed(4)} units, spent ${pos.solSpent.toFixed(4)} SOL, entry $${pos.entryPriceUsd.toFixed(4)}, mode=${pos.swapMode}`)
-    .join('; ') || 'none';
+  // Build compact per-token market summary with candle context
+  let marketLines = '';
+  if (market?.tokens) {
+    marketLines = Object.entries(market.tokens as Record<string, any>)
+      .map(([sym, d]: [string, any]) => {
+        const chg = d.usd_24hr_change >= 0 ? `+${d.usd_24hr_change}` : String(d.usd_24hr_change);
+        const closes = (d.recentCloses as number[] || []).slice(-8).map((p: number) => p.toFixed(4)).join(',');
+        return `${sym}: $${(d.usd as number).toFixed(4)} | 24h:${chg}% | trend:${d.trend} | mom:${d.momentum} | sma:${d.smaCross} | chart:[${closes}]`;
+      })
+      .join('\n');
+  } else {
+    marketLines = JSON.stringify(market);
+  }
+
+  const portfolioStr = Object.entries(agentPortfolio)
+    .map(([sym, pos]) => `${sym}:${pos.amountUnits.toFixed(4)}u@$${pos.entryPriceUsd.toFixed(4)}(${pos.swapMode})`)
+    .join(', ') || 'none';
   const pnlStr = `${realizedPnlSol >= 0 ? '+' : ''}${realizedPnlSol.toFixed(6)} SOL`;
 
+  const allSyms = LAB_SYMBOLS.join('|');
+  const chainSyms = Object.keys(LAB_TO_CHAIN).join('/');
+
   return [
-    `Market: ${JSON.stringify(market)}`,
-    `Signals: ${JSON.stringify(signalSummary)}`,
-    `Portfolio: ${portfolioLines}`,
-    `P&L: ${pnlStr}`,
-    'Rules: only sell tokens you hold; diversify; no double-buy unless entry was much lower.',
-    'Respond ONLY with JSON: {"action":"buy"|"sell"|"hold","symbol":"SOL"|"RAY"|"ORCA","amount":1-10,"riskScore":1-99,"reason":"brief"}',
+    `MARKET DATA (12 tokens, lab simulation):`,
+    marketLines,
+    ``,
+    `PORTFOLIO: ${portfolioStr}`,
+    `REALIZED P&L: ${pnlStr}`,
+    `SIGNALS: ${JSON.stringify(signalSummary)}`,
+    ``,
+    `RULES:`,
+    `- Only sell tokens you currently hold in portfolio`,
+    `- Prefer tokens with bullish SMA crossover + positive momentum + bull trend`,
+    `- Diversify: avoid concentrating all capital in one token`,
+    `- ${chainSyms} execute real on-chain swaps; all others are paper trades`,
+    ``,
+    `Respond ONLY with JSON: {"action":"buy"|"sell"|"hold","symbol":"${allSyms}","amount":1-10,"riskScore":1-99,"reason":"..."}`,
   ].join('\n');
 };
 
@@ -757,9 +782,20 @@ const symbolToMint: Record<string, string> = {
   SOL: devnetTokenMap?.SOL?.mint || 'So11111111111111111111111111111111111111112',
 };
 
+// All 12 lab symbols. SOLX/RAYX/ORCX map to real on-chain tokens; others are paper-only.
+const LAB_SYMBOLS = ['SOLX', 'RAYX', 'ORCX', 'ATM', 'LQD', 'NOVA', 'BETA', 'GAM', 'ALF', 'DEL', 'OME', 'SIG'] as const;
+type LabSymbol = typeof LAB_SYMBOLS[number];
+
+// Lab symbol → on-chain chain symbol (only 3 tokens have real devnet pools)
+const LAB_TO_CHAIN: Partial<Record<LabSymbol, 'SOL' | 'RAY' | 'ORCA'>> = {
+  SOLX: 'SOL',
+  RAYX: 'RAY',
+  ORCX: 'ORCA',
+};
+
 interface Decision {
   action: 'buy' | 'sell' | 'hold';
-  symbol: 'SOL' | 'RAY' | 'ORCA';
+  symbol: string;
   amount: number;
   riskScore: number;
   reason: string;
@@ -788,17 +824,31 @@ interface Position {
   swapMode: 'real' | 'paper';
 }
 
-const agentPortfolio: Partial<Record<'SOL' | 'RAY' | 'ORCA', Position>> = {};
+const agentPortfolio: Record<string, Position> = {};
 let realizedPnlSol = 0;
 
-const SYMBOL_MARKET_KEY: Record<string, string> = {
+// Legacy market format keys (used when MARKET_LAB_MODE=false)
+const LEGACY_MARKET_KEY: Record<string, string> = {
   SOL: 'solana',
   RAY: 'raydium',
   ORCA: 'orca',
 };
 
-const getTokenPriceUsd = (symbol: string, market: any): number =>
-  Number(market?.[SYMBOL_MARKET_KEY[symbol]]?.usd || 0) || 1;
+const getSolPrice = (market: any): number => {
+  if (market?.tokens) return Number(market.tokens['SOLX']?.usd || 0) || 150;
+  return Number(market?.solana?.usd || 0) || 150;
+};
+
+const getTokenPriceUsd = (symbol: string, market: any): number => {
+  if (market?.tokens) {
+    if (market.tokens[symbol]) return Number(market.tokens[symbol].usd) || 1;
+    // Fallback: if called with legacy 'SOL' key in lab mode
+    if (symbol === 'SOL') return getSolPrice(market);
+    return 1;
+  }
+  const key = LEGACY_MARKET_KEY[symbol];
+  return Number(market?.[key]?.usd || 0) || 1;
+};
 
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -813,11 +863,7 @@ let openrouterError: string | null = null;
 let heliusError: string | null = null;
 let marketDataError: string | null = null;
 const tradeHistory: TradeRecord[] = [];
-let cachedMarketSnapshot: any = {
-  solana: { usd: 0, usd_24hr_change: 0 },
-  raydium: { usd: 0, usd_24hr_change: 0 },
-  orca: { usd: 0, usd_24hr_change: 0 },
-};
+let cachedMarketSnapshot: any = { tokens: {} };
 let cachedMarketSnapshotAt = 0;
 
 const pushTradeRecord = (record: TradeRecord) => {
@@ -840,57 +886,60 @@ export const clearTradeHistory = () => {
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 const decideWithRules = (market: any): Decision => {
-  const entries = [
-    { symbol: 'SOL' as const, change: Number(market?.solana?.usd_24hr_change ?? 0) },
-    { symbol: 'RAY' as const, change: Number(market?.raydium?.usd_24hr_change ?? 0) },
-    { symbol: 'ORCA' as const, change: Number(market?.orca?.usd_24hr_change ?? 0) },
-  ];
+  const entries: Array<{ symbol: string; change: number; momentum: number }> = [];
 
-  const valid = entries.filter((entry) => Number.isFinite(entry.change));
-  if (valid.length === 0) {
-    return {
-      action: 'hold',
-      symbol: 'SOL',
-      amount: 0,
-      riskScore: 50,
-      reason: 'No valid market change data available.',
-      source: 'rule',
-    };
+  if (market?.tokens) {
+    for (const [sym, d] of Object.entries(market.tokens as Record<string, any>)) {
+      const change = Number(d?.usd_24hr_change ?? 0);
+      const momentum = Number(d?.momentum ?? 0);
+      if (Number.isFinite(change)) entries.push({ symbol: sym, change, momentum });
+    }
+  } else {
+    // Legacy format
+    const pairs = [
+      { symbol: 'SOLX', change: Number(market?.solana?.usd_24hr_change ?? 0), momentum: 0 },
+      { symbol: 'RAYX', change: Number(market?.raydium?.usd_24hr_change ?? 0), momentum: 0 },
+      { symbol: 'ORCX', change: Number(market?.orca?.usd_24hr_change ?? 0), momentum: 0 },
+    ];
+    entries.push(...pairs.filter((e) => Number.isFinite(e.change)));
   }
 
-  const best = [...valid].sort((a, b) => b.change - a.change)[0];
-  const worst = [...valid].sort((a, b) => a.change - b.change)[0];
+  if (entries.length === 0) {
+    return { action: 'hold', symbol: 'SOLX', amount: 0, riskScore: 50, reason: 'No valid market data.', source: 'rule' };
+  }
 
-  if (best.change >= 1.0) {
+  // Score: 60% 24h change + 40% momentum
+  const scored = entries.map((e) => ({ ...e, score: e.change * 0.6 + e.momentum * 10 * 0.4 }));
+  const best = [...scored].sort((a, b) => b.score - a.score)[0];
+  const worst = [...scored].sort((a, b) => a.score - b.score)[0];
+
+  if (best.change >= 1.0 || best.momentum >= 0.3) {
     return {
       action: 'buy',
       symbol: best.symbol,
-      amount: clamp(Math.round(best.change), 1, 10),
-      riskScore: clamp(Math.round(52 + best.change * 4), 40, 85),
-      reason: `Rule momentum buy: ${best.symbol} 24h change ${best.change.toFixed(2)}% is strongest.`,
+      amount: Math.min(10, Math.max(1, Math.round(Math.abs(best.score)))),
+      riskScore: clamp(Math.round(52 + best.score * 3), 40, 85),
+      reason: `Rule: ${best.symbol} 24h ${best.change.toFixed(2)}% momentum ${best.momentum.toFixed(2)} is strongest.`,
       source: 'rule',
     };
   }
 
-  if (worst.change <= -2.0) {
-    return {
-      action: 'sell',
-      symbol: worst.symbol,
-      amount: clamp(Math.round(Math.abs(worst.change)), 1, 10),
-      riskScore: clamp(Math.round(60 + Math.abs(worst.change) * 3), 45, 90),
-      reason: `Rule risk-reduction sell: ${worst.symbol} dropped ${worst.change.toFixed(2)}% in 24h.`,
-      source: 'rule',
-    };
+  if (worst.change <= -2.0 || worst.momentum <= -0.3) {
+    // Only sell if we hold the token
+    const sellSymbol = agentPortfolio[worst.symbol] ? worst.symbol : best.symbol;
+    if (agentPortfolio[sellSymbol] && (worst.change <= -2.0)) {
+      return {
+        action: 'sell',
+        symbol: sellSymbol,
+        amount: Math.min(10, Math.max(1, Math.round(Math.abs(worst.score)))),
+        riskScore: clamp(Math.round(60 + Math.abs(worst.score) * 3), 45, 90),
+        reason: `Rule: ${sellSymbol} dropped ${worst.change.toFixed(2)}% — risk reduction sell.`,
+        source: 'rule',
+      };
+    }
   }
 
-  return {
-    action: 'hold',
-    symbol: 'SOL',
-    amount: 0,
-    riskScore: 50,
-    reason: 'Rule engine: no strong edge, staying in hold.',
-    source: 'rule',
-  };
+  return { action: 'hold', symbol: 'SOLX', amount: 0, riskScore: 50, reason: 'Rule engine: no clear edge.', source: 'rule' };
 };
 
 const decideWithLlm = async (market: any, heliusSignals: any): Promise<Decision | null> => {
@@ -903,8 +952,9 @@ const decideWithLlm = async (market: any, heliusSignals: any): Promise<Decision 
   const action = typeof decision.action === 'string' && ['buy', 'sell', 'hold'].includes(decision.action.toLowerCase())
     ? decision.action.toLowerCase() as 'buy' | 'sell' | 'hold'
     : 'hold';
-  const symbol = typeof decision.symbol === 'string' ? decision.symbol.toUpperCase() : 'SOL';
-  if (!['SOL', 'RAY', 'ORCA'].includes(symbol)) {
+  const symbol = typeof decision.symbol === 'string' ? decision.symbol.toUpperCase() : 'SOLX';
+  if (!(LAB_SYMBOLS as readonly string[]).includes(symbol)) {
+    console.warn(`LLM returned unknown symbol: ${symbol}, falling back to rules`);
     return null;
   }
 
@@ -916,14 +966,7 @@ const decideWithLlm = async (market: any, heliusSignals: any): Promise<Decision 
     return null;
   }
 
-  return {
-    action,
-    symbol: symbol as 'SOL' | 'RAY' | 'ORCA',
-    amount,
-    riskScore,
-    reason,
-    source: 'llm',
-  };
+  return { action, symbol, amount, riskScore, reason, source: 'llm' };
 };
 
 export const getAgentState = () => ({
@@ -986,19 +1029,18 @@ export const getAgentHealth = async () => {
 
 const applyPortfolioUpdate = (
   action: 'buy' | 'sell',
-  symbol: 'SOL' | 'RAY' | 'ORCA',
+  symbol: string,
   amountValue: number,
   tradeSolAmount: number,
   market: any,
   swapMode: 'real' | 'paper',
   finalTx?: string,
 ) => {
-  const solPriceUsd = getTokenPriceUsd('SOL', market);
+  const solPriceUsd = getSolPrice(market);
   const tokenPriceUsd = getTokenPriceUsd(symbol, market);
-  const sym = symbol as 'SOL' | 'RAY' | 'ORCA';
 
   if (action === 'buy') {
-    const existing = agentPortfolio[sym];
+    const existing = agentPortfolio[symbol];
     if (existing) {
       const totalUnits = existing.amountUnits + amountValue;
       existing.entryPriceUsd = (existing.entryPriceUsd * existing.amountUnits + tokenPriceUsd * amountValue) / totalUnits;
@@ -1009,7 +1051,7 @@ const applyPortfolioUpdate = (
         existing.entryTx = finalTx;
       }
     } else {
-      agentPortfolio[sym] = {
+      agentPortfolio[symbol] = {
         amountUnits: amountValue,
         solSpent: tradeSolAmount,
         entryPriceUsd: tokenPriceUsd,
@@ -1019,7 +1061,7 @@ const applyPortfolioUpdate = (
       };
     }
   } else {
-    const pos = agentPortfolio[sym];
+    const pos = agentPortfolio[symbol];
     if (pos) {
       const sellUnits = Math.min(amountValue, pos.amountUnits);
       const fraction = sellUnits / pos.amountUnits;
@@ -1028,7 +1070,7 @@ const applyPortfolioUpdate = (
       realizedPnlSol += pnlSol;
       console.log(`P&L ${symbol} sell: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`);
       if (sellUnits >= pos.amountUnits - 0.0001) {
-        delete agentPortfolio[sym];
+        delete agentPortfolio[symbol];
       } else {
         pos.amountUnits -= sellUnits;
         pos.solSpent -= pos.solSpent * fraction;
@@ -1062,9 +1104,12 @@ export const runAgentOnce = async () => {
   const newRiskScore = chosen.riskScore;
   const reason = chosen.reason;
 
+  // Resolve mint from chain symbol (chainSymbol computed later, but we need it for executeTrade)
+  // chainSymbol is derived below in the swap section; pre-compute here for mint lookup
+  const preChainSymbol = LAB_TO_CHAIN[symbol as LabSymbol];
   let mint = new PublicKey(symbolToMint.SOL);
-  if (symbolToMint[symbol]) {
-    mint = new PublicKey(symbolToMint[symbol]);
+  if (preChainSymbol && symbolToMint[preChainSymbol]) {
+    mint = new PublicKey(symbolToMint[preChainSymbol]);
   }
 
   let message = `AI decision (${chosen.source}): ${action.toUpperCase()} ${symbol} amount ${amountValue} risk ${newRiskScore}. Reason: ${reason}`;
@@ -1086,7 +1131,7 @@ export const runAgentOnce = async () => {
   }
 
   // ── Guard: can't sell a token we don't hold ────────────────────────────────
-  if (action === 'sell' && !agentPortfolio[symbol as 'SOL' | 'RAY' | 'ORCA']) {
+  if (action === 'sell' && !agentPortfolio[symbol]) {
     const skipMsg = `No ${symbol} position to sell — skipping.`;
     pushTradeRecord({
       ts: new Date().toISOString(),
@@ -1102,12 +1147,34 @@ export const runAgentOnce = async () => {
     return { action: 'hold', message: skipMsg };
   }
 
-  // ── Real swap only (no simulation fallback) ───────────────────────────────
+  // ── Determine if this is an on-chain tradeable token or a paper-only lab token ──
+  const chainSymbol = LAB_TO_CHAIN[symbol as LabSymbol]; // 'SOL'|'RAY'|'ORCA' or undefined
+  const isChainToken = Boolean(chainSymbol);
+
   const tradeSolAmount = Math.max(amountValue * TRADE_SOL_PER_UNIT, 0.001);
   const tradeLamports = Math.round(tradeSolAmount * 1e9);
   let swapTx: string | undefined;
-  let swapMode: 'real' | 'paper' = 'real';
+  let swapMode: 'real' | 'paper' = isChainToken ? 'real' : 'paper';
 
+  if (!isChainToken) {
+    // ── Paper trade: lab-only token (ATM, LQD, NOVA, BETA, GAM, ALF, DEL, OME, SIG) ──
+    applyPortfolioUpdate(action, symbol, amountValue, tradeSolAmount, market, 'paper');
+    const paperMsg = `${message} | paper trade (no on-chain pool for ${symbol})`;
+    lastMessage = paperMsg;
+    pushTradeRecord({
+      ts: new Date().toISOString(),
+      action,
+      symbol,
+      amount: amountValue,
+      riskScore: newRiskScore,
+      source: chosen.source,
+      reason,
+      status: 'executed',
+    });
+    return { action, message: paperMsg };
+  }
+
+  // ── Real on-chain swap (SOLX→SOL, RAYX→RAY, ORCX→ORCA) ─────────────────
   if (action === 'buy') {
     const agentBal = await connection.getBalance(keypair.publicKey);
     if (agentBal <= tradeLamports + 10_000_000) {
@@ -1115,22 +1182,21 @@ export const runAgentOnce = async () => {
     }
 
     if (SWAP_PROVIDER === 'raydium') {
-      swapTx = await executeRaydiumSwap('SOL', symbol, tradeLamports);
-      console.log(`Raydium BUY ${symbol}: ${swapTx}`);
+      swapTx = await executeRaydiumSwap('SOL', chainSymbol!, tradeLamports);
+      console.log(`Raydium BUY ${symbol} (${chainSymbol}): ${swapTx}`);
     } else {
-      swapTx = await executeJupiterSwap('SOL', symbol, tradeLamports);
-      console.log(`Jupiter BUY ${symbol}: ${swapTx}`);
+      swapTx = await executeJupiterSwap('SOL', chainSymbol!, tradeLamports);
+      console.log(`Jupiter BUY ${symbol} (${chainSymbol}): ${swapTx}`);
     }
   } else if (action === 'sell') {
     if (SWAP_PROVIDER === 'raydium') {
-      const tokenDecimals = devnetTokenMap?.[symbol]?.decimals || 6;
+      const tokenDecimals = devnetTokenMap?.[chainSymbol!]?.decimals || 6;
       const desiredRaw = BigInt(Math.max(1, Math.floor(amountValue * Math.pow(10, tokenDecimals))));
-      const pool = raydiumPoolMap[symbol];
+      const pool = raydiumPoolMap[chainSymbol!];
       if (!pool?.tokenMint) {
-        throw new Error(`Raydium pool/token config missing for ${symbol}.`);
+        throw new Error(`Raydium pool/token config missing for ${symbol} (${chainSymbol}).`);
       }
 
-      // Cap sell amount by current token ATA balance to avoid swap failure.
       let balanceRaw = 0n;
       try {
         const ata = await anchor.utils.token.associatedAddress({
@@ -1143,16 +1209,15 @@ export const runAgentOnce = async () => {
         balanceRaw = 0n;
       }
       if (balanceRaw <= 0n) {
-        throw new Error(`No ${symbol} token balance to SELL on Raydium.`);
+        throw new Error(`No ${chainSymbol} token balance to SELL on Raydium.`);
       }
 
       const sellRaw = Number(balanceRaw < desiredRaw ? balanceRaw : desiredRaw);
-      swapTx = await executeRaydiumSwap(symbol, 'SOL', sellRaw);
-      console.log(`Raydium SELL ${symbol}: ${swapTx}`);
+      swapTx = await executeRaydiumSwap(chainSymbol!, 'SOL', sellRaw);
+      console.log(`Raydium SELL ${symbol} (${chainSymbol}): ${swapTx}`);
     } else {
-      // Jupiter path keeps SOL-sized approximation.
-      swapTx = await executeJupiterSwap(symbol, 'SOL', tradeLamports);
-      console.log(`Jupiter SELL ${symbol}: ${swapTx}`);
+      swapTx = await executeJupiterSwap(chainSymbol!, 'SOL', tradeLamports);
+      console.log(`Jupiter SELL ${symbol} (${chainSymbol}): ${swapTx}`);
     }
   }
   // ──────────────────────────────────────────────────────────────────────────

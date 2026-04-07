@@ -386,27 +386,49 @@ export const simulateLabSwap = async (symbolIn: string, symbolOut: string, amoun
 export const getAgentMarketSliceFromLab = async () => {
   await tick();
 
-  const sol = tokens.get('SOLX');
-  const ray = tokens.get('RAYX');
-  const orc = tokens.get('ORCX');
+  const result: Record<string, {
+    usd: number;
+    usd_24hr_change: number;
+    trend: string;
+    momentum: number;
+    sentiment: number;
+    liquidityUsd: number;
+    volume24hUsd: number;
+    smaCross: string;
+    recentCloses: number[];
+  }> = {};
 
-  const mk = (token: LabToken | undefined) => {
-    if (!token) {
-      return { usd: 0, usd_24hr_change: 0 };
-    }
+  for (const token of tokens.values()) {
     const cs = candles.get(token.symbol) || [];
-    const back = cs.length > 24 ? cs[cs.length - 24] : cs[0];
-    const base = back?.c || token.priceUsd;
-    const change = base > 0 ? ((token.priceUsd - base) / base) * 100 : 0;
-    return {
-      usd: token.priceUsd,
-      usd_24hr_change: Number.isFinite(change) ? change : 0,
-    };
-  };
 
-  return {
-    solana: mk(sol),
-    raydium: mk(ray),
-    orca: mk(orc),
-  };
+    // 24h change: compare current price vs price 24 candles ago
+    const back24 = cs.length > 24 ? cs[cs.length - 24] : cs[0];
+    const base24 = back24?.c || token.priceUsd;
+    const change24 = base24 > 0 ? ((token.priceUsd - base24) / base24) * 100 : 0;
+
+    // Last 20 closing prices for LLM chart analysis
+    const recentCloses = cs.slice(-20).map((c) => +c.c.toFixed(6));
+
+    // SMA(6) vs SMA(12) crossover signal
+    const all = cs.map((c) => c.c);
+    const sma12arr = all.slice(-12);
+    const sma6arr = all.slice(-6);
+    const sma12 = sma12arr.length > 0 ? sma12arr.reduce((a, b) => a + b, 0) / sma12arr.length : token.priceUsd;
+    const sma6 = sma6arr.length > 0 ? sma6arr.reduce((a, b) => a + b, 0) / sma6arr.length : token.priceUsd;
+    const smaCross = sma6 > sma12 * 1.002 ? 'bullish' : sma6 < sma12 * 0.998 ? 'bearish' : 'neutral';
+
+    result[token.symbol] = {
+      usd: token.priceUsd,
+      usd_24hr_change: Number.isFinite(change24) ? +change24.toFixed(3) : 0,
+      trend: token.trend,
+      momentum: +token.momentum.toFixed(3),
+      sentiment: +token.sentiment.toFixed(3),
+      liquidityUsd: Math.round(token.liquidityUsd),
+      volume24hUsd: Math.round(token.volume24hUsd),
+      smaCross,
+      recentCloses,
+    };
+  }
+
+  return { tokens: result };
 };
