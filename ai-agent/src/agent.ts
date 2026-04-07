@@ -30,7 +30,7 @@ const AVAILABLE_MODELS = [
 
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL 
   ? String(process.env.OPENROUTER_MODEL).trim()
-  : AVAILABLE_MODELS[0]; // Default to Nemotron (best free model)
+  : 'arcee-ai/trinity-large-preview:free'; // Default to Trinity
 
 // Validate model is in available list, otherwise use default
 const VALIDATED_MODEL = AVAILABLE_MODELS.includes(OPENROUTER_MODEL) 
