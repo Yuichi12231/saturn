@@ -63,36 +63,37 @@ const poolRegistryFile =
   || resolveExistingPath('devnet-raydium-pools.json')
   || resolveExistingPath('ai-agent/devnet-raydium-pools.json');
 
-const loadDevnetTokenMap = (): Record<'SOL' | 'RAY' | 'ORCA', DevnetTokenRecord> | null => {
+const loadDevnetTokenMap = (): Record<string, DevnetTokenRecord> => {
   try {
-    if (!tokenSetFile) return null;
+    if (!tokenSetFile) return {};
     const parsed = JSON.parse(fs.readFileSync(tokenSetFile, 'utf8'));
     const tokens: any[] = Array.isArray(parsed?.tokens) ? parsed.tokens : [];
-    const bySymbol = new Map(tokens.map((t) => [String(t.symbol || '').toUpperCase(), t]));
-    const solx = bySymbol.get('SOLX');
-    const rayx = bySymbol.get('RAYX');
-    const orcx = bySymbol.get('ORCX');
-    if (!solx || !rayx || !orcx) return null;
-    return {
-      SOL: { symbol: 'SOLX', mint: String(solx.mint), decimals: Number(solx.decimals || 6) },
-      RAY: { symbol: 'RAYX', mint: String(rayx.mint), decimals: Number(rayx.decimals || 6) },
-      ORCA: { symbol: 'ORCX', mint: String(orcx.mint), decimals: Number(orcx.decimals || 6) },
-    };
+    const map: Record<string, DevnetTokenRecord> = {};
+    for (const token of tokens) {
+      const symbol = String(token?.symbol || '').toUpperCase();
+      if (!symbol) continue;
+      map[symbol] = {
+        symbol,
+        mint: String(token?.mint || ''),
+        decimals: Number(token?.decimals || 6),
+      };
+    }
+    return map;
   } catch {
-    return null;
+    return {};
   }
 };
 
-const loadRaydiumPoolMap = (): Partial<Record<'SOL' | 'RAY' | 'ORCA', RaydiumPoolRecord>> => {
+const loadRaydiumPoolMap = (): Record<string, RaydiumPoolRecord> => {
   try {
     if (!poolRegistryFile) return {};
     const parsed = JSON.parse(fs.readFileSync(poolRegistryFile, 'utf8'));
     const pools: any[] = Array.isArray(parsed?.pools) ? parsed.pools : [];
-    const map: Partial<Record<'SOL' | 'RAY' | 'ORCA', RaydiumPoolRecord>> = {};
+    const map: Record<string, RaydiumPoolRecord> = {};
     for (const p of pools) {
       const sym = String(p.symbol || '').toUpperCase();
-      if (!['SOL', 'RAY', 'ORCA'].includes(sym)) continue;
-      map[sym as 'SOL' | 'RAY' | 'ORCA'] = {
+      if (!sym) continue;
+      map[sym] = {
         symbol: sym,
         tokenMint: String(p.tokenMint),
         tokenDecimals: Number(p.tokenDecimals || 6),
@@ -208,22 +209,24 @@ const getRaydiumClient = async (): Promise<Raydium> => {
 };
 
 const executeRaydiumSwap = async (
-  symbolIn: 'SOL' | 'RAY' | 'ORCA',
-  symbolOut: 'SOL' | 'RAY' | 'ORCA',
+  symbolIn: string,
+  symbolOut: string,
   inputAmountRaw: number,
 ): Promise<string> => {
   if (inputAmountRaw <= 0 || !Number.isFinite(inputAmountRaw)) {
     throw new Error('Raydium swap input amount must be positive');
   }
 
-  const tradeSymbol = symbolIn === 'SOL' ? symbolOut : symbolIn;
+  const inSym = symbolIn.toUpperCase();
+  const outSym = symbolOut.toUpperCase();
+  const tradeSymbol = inSym === 'SOL' ? outSym : inSym;
   const pool = raydiumPoolMap[tradeSymbol];
   if (!pool?.poolId) {
     throw new Error(`No Raydium devnet pool configured for ${tradeSymbol}. Create pools and set RAYDIUM_POOL_REGISTRY_PATH.`);
   }
 
-  const inMint = symbolIn === 'SOL' ? NATIVE_MINT.toBase58() : (devnetTokenMap?.[symbolIn]?.mint || pool.tokenMint);
-  const outMint = symbolOut === 'SOL' ? NATIVE_MINT.toBase58() : (devnetTokenMap?.[symbolOut]?.mint || pool.tokenMint);
+  const inMint = inSym === 'SOL' ? NATIVE_MINT.toBase58() : (devnetTokenMap?.[inSym]?.mint || pool.tokenMint);
+  const outMint = outSym === 'SOL' ? NATIVE_MINT.toBase58() : (devnetTokenMap?.[outSym]?.mint || pool.tokenMint);
 
   const raydium = await getRaydiumClient();
   const { poolInfo } = await raydium.cpmm.getPoolInfoFromRpc(pool.poolId);
@@ -674,7 +677,7 @@ const buildPrompt = (market: any, heliusSignals: any) => {
   const pnlStr = `${realizedPnlSol >= 0 ? '+' : ''}${realizedPnlSol.toFixed(6)} SOL`;
 
   const allSyms = LAB_SYMBOLS.join('|');
-  const chainSyms = Object.keys(LAB_TO_CHAIN).join('/');
+  const configuredPoolSyms = Object.keys(raydiumPoolMap).join('/') || 'none';
 
   return [
     `MARKET DATA (12 tokens, lab simulation):`,
@@ -688,28 +691,20 @@ const buildPrompt = (market: any, heliusSignals: any) => {
     `- Only sell tokens you currently hold in portfolio`,
     `- Prefer tokens with bullish SMA crossover + positive momentum + bull trend`,
     `- Diversify: avoid concentrating all capital in one token`,
-    `- ${chainSyms} execute real on-chain swaps; all others are paper trades`,
+    `- Execute only real on-chain swaps; if pool is missing for a symbol, skip trade`,
+    `- Configured Raydium pools: ${configuredPoolSyms}`,
     ``,
     `Respond ONLY with JSON: {"action":"buy"|"sell"|"hold","symbol":"${allSyms}","amount":1-10,"riskScore":1-99,"reason":"..."}`,
   ].join('\n');
 };
 
-const symbolToMint: Record<string, string> = {
-  RAY: devnetTokenMap?.RAY?.mint || '4k3Dyjzvzp8eB5Vq7hvh8BUkQ9dFJz2AxKTeoBZGPi7u',
-  ORCA: devnetTokenMap?.ORCA?.mint || 'orca7wuirT1o1sPo2Ng76gGgneJzmoGWaa6D4wvkPsi',
-  SOL: devnetTokenMap?.SOL?.mint || 'So11111111111111111111111111111111111111112',
-};
+const symbolToMint: Record<string, string> = Object.fromEntries(
+  Object.entries(devnetTokenMap).map(([symbol, token]) => [symbol, token.mint]),
+);
 
-// All 12 lab symbols. SOLX/RAYX/ORCX map to real on-chain tokens; others are paper-only.
+// All 12 lab symbols.
 const LAB_SYMBOLS = ['SOLX', 'RAYX', 'ORCX', 'ATM', 'LQD', 'NOVA', 'BETA', 'GAM', 'ALF', 'DEL', 'OME', 'SIG'] as const;
 type LabSymbol = typeof LAB_SYMBOLS[number];
-
-// Lab symbol → on-chain chain symbol (only 3 tokens have real devnet pools)
-const LAB_TO_CHAIN: Partial<Record<LabSymbol, 'SOL' | 'RAY' | 'ORCA'>> = {
-  SOLX: 'SOL',
-  RAYX: 'RAY',
-  ORCX: 'ORCA',
-};
 
 interface Decision {
   action: 'buy' | 'sell' | 'hold';
@@ -1068,13 +1063,24 @@ export const runAgentOnce = async () => {
   const newRiskScore = chosen.riskScore;
   const reason = chosen.reason;
 
-  // Resolve mint from chain symbol (chainSymbol computed later, but we need it for executeTrade)
-  // chainSymbol is derived below in the swap section; pre-compute here for mint lookup
-  const preChainSymbol = LAB_TO_CHAIN[symbol as LabSymbol];
-  let mint = new PublicKey(symbolToMint.SOL);
-  if (preChainSymbol && symbolToMint[preChainSymbol]) {
-    mint = new PublicKey(symbolToMint[preChainSymbol]);
+  // Resolve mint from selected lab symbol for vault holdings bookkeeping.
+  const mintStr = symbolToMint[symbol];
+  if (!mintStr) {
+    const skipMsg = `No mint configured for ${symbol} in devnet-token-set.json. Skipping trade.`;
+    pushTradeRecord({
+      ts: new Date().toISOString(),
+      action: 'hold',
+      symbol,
+      amount: 0,
+      riskScore: newRiskScore,
+      source: chosen.source,
+      reason: skipMsg,
+      status: 'skipped',
+    });
+    lastMessage = skipMsg;
+    return { action: 'hold', message: skipMsg };
   }
+  let mint = new PublicKey(mintStr);
 
   let message = `AI decision (${chosen.source}): ${action.toUpperCase()} ${symbol} amount ${amountValue} risk ${newRiskScore}. Reason: ${reason}`;
   lastAction = message;
@@ -1111,14 +1117,13 @@ export const runAgentOnce = async () => {
     return { action: 'hold', message: skipMsg };
   }
 
-  // ── Determine if this is an on-chain tradeable token or a paper-only lab token ──
-  const chainSymbol = LAB_TO_CHAIN[symbol as LabSymbol]; // 'SOL'|'RAY'|'ORCA' or undefined
-  const isChainToken = Boolean(chainSymbol);
+  // ── Real-only mode: symbol must have configured on-chain pool ─────────────
+  const hasPool = Boolean(raydiumPoolMap[symbol]);
 
   const tradeSolAmount = Math.max(amountValue * TRADE_SOL_PER_UNIT, 0.001);
   const tradeLamports = Math.round(tradeSolAmount * 1e9);
   let swapTx: string | undefined;
-  let swapMode: 'real' | 'paper' = isChainToken ? 'real' : 'paper';
+  let swapMode: 'real' | 'paper' = 'real';
 
   // ── Capital guard: ensure vault has enough SOL for this trade ──────────────
   if (action === 'buy') {
@@ -1132,25 +1137,23 @@ export const runAgentOnce = async () => {
     }
   }
 
-  if (!isChainToken) {
-    // ── Paper trade: lab-only token (ATM, LQD, NOVA, BETA, GAM, ALF, DEL, OME, SIG) ──
-    applyPortfolioUpdate(action, symbol, amountValue, tradeSolAmount, market, 'paper');
-    const paperMsg = `${message} | paper trade (no on-chain pool for ${symbol})`;
-    lastMessage = paperMsg;
+  if (!hasPool) {
+    const skipMsg = `No on-chain Raydium pool configured for ${symbol}. Skipping trade (real-only mode).`;
     pushTradeRecord({
       ts: new Date().toISOString(),
-      action,
+      action: 'hold',
       symbol,
-      amount: amountValue,
+      amount: 0,
       riskScore: newRiskScore,
       source: chosen.source,
-      reason,
-      status: 'executed',
+      reason: skipMsg,
+      status: 'skipped',
     });
-    return { action, message: paperMsg };
+    lastMessage = skipMsg;
+    return { action: 'hold', message: skipMsg };
   }
 
-  // ── Real on-chain swap (SOLX→SOL, RAYX→RAY, ORCX→ORCA) ─────────────────
+  // ── Real on-chain swap (SOL <-> selected lab token) ─────────────────────
   if (action === 'buy') {
     const agentBal = await connection.getBalance(keypair.publicKey);
     if (agentBal <= tradeLamports + 10_000_000) {
@@ -1158,19 +1161,19 @@ export const runAgentOnce = async () => {
     }
 
     if (SWAP_PROVIDER === 'raydium') {
-      swapTx = await executeRaydiumSwap('SOL', chainSymbol!, tradeLamports);
-      console.log(`Raydium BUY ${symbol} (${chainSymbol}): ${swapTx}`);
+      swapTx = await executeRaydiumSwap('SOL', symbol, tradeLamports);
+      console.log(`Raydium BUY ${symbol}: ${swapTx}`);
     } else {
-      swapTx = await executeJupiterSwap('SOL', chainSymbol!, tradeLamports);
-      console.log(`Jupiter BUY ${symbol} (${chainSymbol}): ${swapTx}`);
+      // Jupiter route isn't configured for custom lab tokens.
+      throw new Error('SWAP_PROVIDER=jupiter is not supported for custom lab tokens. Use SWAP_PROVIDER=raydium.');
     }
   } else if (action === 'sell') {
     if (SWAP_PROVIDER === 'raydium') {
-      const tokenDecimals = devnetTokenMap?.[chainSymbol!]?.decimals || 6;
+      const tokenDecimals = devnetTokenMap?.[symbol]?.decimals || 6;
       const desiredRaw = BigInt(Math.max(1, Math.floor(amountValue * Math.pow(10, tokenDecimals))));
-      const pool = raydiumPoolMap[chainSymbol!];
+      const pool = raydiumPoolMap[symbol];
       if (!pool?.tokenMint) {
-        throw new Error(`Raydium pool/token config missing for ${symbol} (${chainSymbol}).`);
+        throw new Error(`Raydium pool/token config missing for ${symbol}.`);
       }
 
       let balanceRaw = 0n;
@@ -1185,15 +1188,14 @@ export const runAgentOnce = async () => {
         balanceRaw = 0n;
       }
       if (balanceRaw <= 0n) {
-        throw new Error(`No ${chainSymbol} token balance to SELL on Raydium.`);
+        throw new Error(`No ${symbol} token balance to SELL on Raydium.`);
       }
 
       const sellRaw = Number(balanceRaw < desiredRaw ? balanceRaw : desiredRaw);
-      swapTx = await executeRaydiumSwap(chainSymbol!, 'SOL', sellRaw);
-      console.log(`Raydium SELL ${symbol} (${chainSymbol}): ${swapTx}`);
+      swapTx = await executeRaydiumSwap(symbol, 'SOL', sellRaw);
+      console.log(`Raydium SELL ${symbol}: ${swapTx}`);
     } else {
-      swapTx = await executeJupiterSwap(chainSymbol!, 'SOL', tradeLamports);
-      console.log(`Jupiter SELL ${symbol} (${chainSymbol}): ${swapTx}`);
+      throw new Error('SWAP_PROVIDER=jupiter is not supported for custom lab tokens. Use SWAP_PROVIDER=raydium.');
     }
   }
   // ──────────────────────────────────────────────────────────────────────────

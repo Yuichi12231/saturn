@@ -27,7 +27,7 @@ const OUTPUT_PATH = path.resolve(
   process.env.RAYDIUM_POOL_REGISTRY_PATH || 'devnet-raydium-pools.json',
 );
 
-const TARGET_SYMBOLS = ['SOLX', 'RAYX', 'ORCX'] as const;
+const TARGET_SYMBOLS = ['SOLX', 'RAYX', 'ORCX', 'ATM', 'LQD', 'NOVA', 'BETA', 'GAM', 'ALF', 'DEL', 'OME', 'SIG'] as const;
 
 const INITIAL_SOL_LAMPORTS = Number(process.env.CPMM_SOL_LAMPORTS || 0.3 * 1e9);
 const INITIAL_TOKEN_UNITS = Number(process.env.CPMM_TOKEN_UNITS || 2_000_000);
@@ -110,7 +110,7 @@ async function main() {
   const tokens = loadTokenSet();
   const bySymbol = new Map(tokens.map((t) => [t.symbol, t]));
 
-  const pools: Array<{ symbol: 'SOL' | 'RAY' | 'ORCA'; tokenMint: string; tokenDecimals: number; poolId: string; txId: string }> = [];
+  const pools: Array<{ symbol: string; tokenMint: string; tokenDecimals: number; poolId: string; txId: string }> = [];
 
   for (const symbol of TARGET_SYMBOLS) {
     const token = bySymbol.get(symbol);
@@ -150,9 +150,8 @@ async function main() {
     const { txId } = await txData.execute({ sendAndConfirm: true });
     const poolId = txData.extInfo.address.poolId.toBase58();
 
-    const apiSymbol = symbol === 'SOLX' ? 'SOL' : symbol === 'RAYX' ? 'RAY' : 'ORCA';
     pools.push({
-      symbol: apiSymbol,
+      symbol,
       tokenMint: token.mint,
       tokenDecimals: token.decimals,
       poolId,
