@@ -4,6 +4,7 @@ import bs58 from 'bs58';
 import dotenv from 'dotenv';
 import * as anchor from '@project-serum/anchor';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { getAgentMarketSliceFromLab } from './marketLab';
 
 dotenv.config();
 
@@ -34,11 +35,13 @@ const VALIDATED_MODEL = AVAILABLE_MODELS.includes(OPENROUTER_MODEL)
 
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 const AGENT_EXECUTION_MODE = 'onchain';
+const MARKET_LAB_MODE = String(process.env.MARKET_LAB_MODE || '').toLowerCase() === 'true' || process.env.MARKET_LAB_MODE === '1';
 
 // Log environment configuration at startup
 console.log('[AGENT INIT] Environment Variables:');
 console.log(`  AGENT_DEMO_MODE=${process.env.AGENT_DEMO_MODE} (parsed as: ${AGENT_DEMO_MODE})`);
 console.log(`  AGENT_EXECUTION_MODE=${AGENT_EXECUTION_MODE} (demo simulation disabled)`);
+console.log(`  MARKET_LAB_MODE=${process.env.MARKET_LAB_MODE} (parsed as: ${MARKET_LAB_MODE})`);
 console.log(`  OPENROUTER_MODEL=${OPENROUTER_MODEL} (validated: ${VALIDATED_MODEL})`);
 console.log(`  Available models: ${AVAILABLE_MODELS.join(', ')}`);
 console.log(`  OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY ? '***' : 'NOT SET'}`);
@@ -193,6 +196,14 @@ const ensureVaultExists = async (owner: PublicKey) => {
 };
 
 const getMarketData = async () => {
+  if (MARKET_LAB_MODE) {
+    const synthetic = getAgentMarketSliceFromLab();
+    marketDataError = null;
+    cachedMarketSnapshot = synthetic;
+    cachedMarketSnapshotAt = Date.now();
+    return synthetic;
+  }
+
   const emptyMarket = {
     solana: { usd: 0, usd_24hr_change: 0 },
     raydium: { usd: 0, usd_24hr_change: 0 },
@@ -780,6 +791,7 @@ export const getAgentHealth = async () => {
       openrouterModel: VALIDATED_MODEL,
       demoMode: AGENT_DEMO_MODE,
       executionMode: AGENT_EXECUTION_MODE,
+      marketLabMode: MARKET_LAB_MODE,
       heliusConfigured: Boolean(HELIUS_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
     },

@@ -64,6 +64,8 @@ interface AgentHealth {
     openrouterKeySource?: string | null;
     openrouterModel?: string;
     demoMode?: boolean;
+    executionMode?: string;
+    marketLabMode?: boolean;
     heliusConfigured?: boolean;
     walletConfigured?: boolean;
   };
@@ -140,6 +142,19 @@ interface TokenVisual {
   series: number[];
 }
 
+interface LabToken {
+  symbol: string;
+  name: string;
+  priceUsd: number;
+  liquidityUsd: number;
+  marketCapUsd: number;
+  volume24hUsd: number;
+  momentum: number;
+  fundamentals: number;
+  sentiment: number;
+  trend: 'bull' | 'bear' | 'sideways';
+}
+
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
 
 const extractErrorMessage = (error: unknown): string => {
@@ -205,6 +220,7 @@ const AppContent = () => {
   const [marketSource, setMarketSource] = useState('loading');
   const [marketError, setMarketError] = useState('');
   const [marketHistory, setMarketHistory] = useState<MarketSnapshot[]>([]);
+  const [labTokens, setLabTokens] = useState<LabToken[]>([]);
 
   // Constants derived at module level — used as-is here.
   const AGENT_API_URL = AGENT_API_BASE_URL;
@@ -870,6 +886,13 @@ const AppContent = () => {
     }
   }, [callAgentApi]);
 
+  const refreshLabSnapshot = useCallback(async () => {
+    const result = await callAgentApi('/api/lab/snapshot');
+    if (result?.items && Array.isArray(result.items)) {
+      setLabTokens(result.items as LabToken[]);
+    }
+  }, [callAgentApi]);
+
   const deleteAgentTrade = useCallback(async (index: number) => {
     // Optimistically remove from UI
     setAgentTrades((prev) => prev.filter((_, i) => i !== index));
@@ -965,7 +988,8 @@ const AppContent = () => {
     refreshAgentStatus();
     refreshAgentHealth();
     refreshAgentTrades();
-  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
+    refreshLabSnapshot();
+  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades, refreshLabSnapshot]);
 
   useEffect(() => {
     // Poll faster when agent is running so new trades appear quickly
@@ -974,10 +998,11 @@ const AppContent = () => {
       refreshAgentStatus();
       refreshAgentHealth();
       refreshAgentTrades();
+      refreshLabSnapshot();
     }, pollMs);
 
     return () => clearInterval(interval);
-  }, [agentRunning, refreshAgentStatus, refreshAgentHealth, refreshAgentTrades]);
+  }, [agentRunning, refreshAgentStatus, refreshAgentHealth, refreshAgentTrades, refreshLabSnapshot]);
 
   useEffect(() => {
     fetchMarketData();
@@ -1010,6 +1035,33 @@ const AppContent = () => {
       </div>
 
       <div className="section-grid">
+        <section className="card">
+          <h2>Devnet Market Lab</h2>
+          <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>
+            Synthetic devnet universe for demos: liquidity, trend regime, momentum and sentiment are updated live.
+          </p>
+          {labTokens.length === 0 ? (
+            <p>Loading lab tokens...</p>
+          ) : (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {labTokens.slice(0, 10).map((token) => (
+                <div key={token.symbol} style={{ border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, padding: 10, background: 'rgba(255,255,255,0.03)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <strong>{token.symbol} <span style={{ color: '#9ca3af', fontWeight: 400 }}>({token.name})</span></strong>
+                    <span style={{ color: token.momentum >= 0 ? '#22c55e' : '#ef4444' }}>${token.priceUsd.toFixed(4)}</span>
+                  </div>
+                  <div style={{ fontSize: '0.86em', color: '#9ca3af', marginTop: 4 }}>
+                    Trend: {token.trend} | Momentum: {(token.momentum * 100).toFixed(1)} | Fundamentals: {(token.fundamentals * 100).toFixed(1)} | Sentiment: {(token.sentiment * 100).toFixed(1)}
+                  </div>
+                  <div style={{ fontSize: '0.84em', color: '#cbd5e1', marginTop: 2 }}>
+                    Liquidity: ${token.liquidityUsd.toFixed(0)} | Vol(24h): ${token.volume24hUsd.toFixed(0)} | MCap: ${token.marketCapUsd.toFixed(0)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="card">
           <h2>Market Overview</h2>
           <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>Feed source: {marketSource}</p>
@@ -1385,6 +1437,8 @@ const AppContent = () => {
           {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
           {'\n'}OpenRouter key: {agentHealth?.env?.openrouterKeySource || 'not found'}
           {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
+          {'\n'}Execution mode: {agentHealth?.env?.executionMode || 'unknown'}
+          {'\n'}Market lab mode: {agentHealth?.env?.marketLabMode ? 'on' : 'off'}
           {'\n'}Demo mode: {agentHealth?.env?.demoMode ? 'on' : 'off'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
           {'\n'}MarketData: {agentHealth?.checks?.marketData || 'unknown'}

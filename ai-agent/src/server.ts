@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
 import path from 'path';
 import { clearTradeHistory, deleteTradeRecord, getAgentHealth, getAgentState, getTradeHistory, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
+import { getLabCandleSeries, getLabSnapshot, simulateLabSwap } from './marketLab';
 
 dotenv.config();
 
@@ -82,6 +83,30 @@ app.post('/api/agent/trigger', async (req: Request, res: Response) => {
     console.error('Trigger failed:', (error as any).message || error);
     res.status(500).json({ error: 'Agent trigger failed' });
   }
+});
+
+app.get('/api/lab/snapshot', (req: Request, res: Response) => {
+  res.json(getLabSnapshot());
+});
+
+app.get('/api/lab/candles/:symbol', (req: Request, res: Response) => {
+  const symbol = String(req.params.symbol || '').trim().toUpperCase();
+  if (!symbol) {
+    res.status(400).json({ error: 'symbol is required' });
+    return;
+  }
+  const limit = Number(req.query.limit || 120);
+  res.json(getLabCandleSeries(symbol, Number.isFinite(limit) ? limit : 120));
+});
+
+app.post('/api/lab/swap', (req: Request, res: Response) => {
+  const { symbolIn, symbolOut, amountIn } = req.body ?? {};
+  const result = simulateLabSwap(String(symbolIn || ''), String(symbolOut || ''), Number(amountIn || 0));
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
 });
 
 // Serve static frontend files
