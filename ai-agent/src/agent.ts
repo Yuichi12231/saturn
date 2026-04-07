@@ -141,7 +141,7 @@ const deriveVaultPda = async (owner: PublicKey) => {
     [Buffer.from('vault'), owner.toBuffer()],
     PROGRAM_ID,
   );
-
+  console.log(`Derived vault PDA: ${vaultPda.toBase58()} from owner: ${owner.toBase58()}`);
   return vaultPda;
 };
 
@@ -150,8 +150,12 @@ const ensureVaultExists = async (owner: PublicKey) => {
   const vaultAccount = await connection.getAccountInfo(vaultPda);
   if (!vaultAccount) {
     throw new Error(
-      `Vault not found for owner ${owner.toBase58()}. ` +
-      'Connect that wallet in UI and run Create Vault first.',
+      `Vault address ${vaultPda.toBase58()} not found for owner ${owner.toBase58()}. ` +
+      `This usually means:\n` +
+      `1. The vault was never created for this wallet\n` +
+      `2. You're using a different wallet than the one that created the vault\n` +
+      `3. The vault exists on a different cluster (e.g., created on mainnet but looking on devnet)\n\n` +
+      `Solution: Connect the SAME wallet in the UI that created the vault, then start the agent from that wallet.`,
     );
   }
 
@@ -732,6 +736,7 @@ export const getAgentHealth = async () => {
     programId: PROGRAM_ID.toBase58(),
     rpcEndpoint: ENDPOINT,
     agentPublicKey: keypair.publicKey.toBase58(),
+    vaultOwner: currentVaultOwner ? currentVaultOwner.toBase58() : 'not_set',
     agentBalanceSol: balanceLamports / 1e9,
     env: {
       openrouterConfigured: Boolean(openrouterApiKey),
@@ -929,9 +934,35 @@ export const runAgentOnce = async () => {
     return { action, message, tx: finalTx };
   } catch (error) {
     const errorMessage = (error as any)?.message || 'Transaction failed';
-    lastMessage = `Failed to execute trade: ${errorMessage}`;
-    lastError = errorMessage;
-    console.error('Trade execution failed:', errorMessage);
+    const anchorError = (error as any);
+    
+    // Provide detailed diagnostics for ConstraintSeeds errors
+    let diagnosticMessage = errorMessage;
+    if (errorMessage.includes('ConstraintSeeds') || errorMessage.includes('seeds constraint')) {
+      diagnosticMessage = (
+        `Vault address mismatch (ConstraintSeeds error).\n` +
+        `Vault owner used: ${currentVaultOwner?.toBase58()}\n` +
+        `Agent wallet: ${keypair.publicKey.toBase58()}\n` +
+        `Vault PDA: ${vaultPda.toBase58()}\n` +
+        `Program: ${PROGRAM_ID.toBase58()}\n\n` +
+        `This means the vault expected a different owner than the one provided.\n` +
+        `Ensure you:\n` +
+        `1. Connected with the SAME wallet that created the vault on the UI\n` +
+        `2. The vault exists for that wallet (check "Vault" section in UI)\n` +
+        `3. The UI shows the correct vault owner`
+      );
+    }
+    
+    lastMessage = `Failed to execute trade: ${diagnosticMessage}`;
+    lastError = diagnosticMessage;
+    console.error('Trade execution failed:', {
+      message: errorMessage,
+      vaultOwner: currentVaultOwner?.toBase58(),
+      agentWallet: keypair.publicKey.toBase58(),
+      vaultPda: vaultPda.toBase58(),
+      programId: PROGRAM_ID.toBase58(),
+      logs: (anchorError?.logs || []).join('\n'),
+    });
     pushTradeRecord({
       ts: new Date().toISOString(),
       action: 'error',
@@ -939,10 +970,10 @@ export const runAgentOnce = async () => {
       amount: amountValue,
       riskScore: newRiskScore,
       source: chosen.source,
-      reason: errorMessage,
+      reason: diagnosticMessage,
       status: 'failed',
     });
-    return { action: 'error', message: errorMessage };
+    return { action: 'error', message: diagnosticMessage };
   }
 };
 
@@ -958,6 +989,8 @@ export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: st
     throw new Error('Invalid vaultOwner public key');
   }
 
+  console.log(`Starting agent schedule with vault owner: ${owner.toBase58()}`);
+  
   currentVaultOwner = owner;
   currentIntervalMinutes = intervalMinutes;
   running = true;

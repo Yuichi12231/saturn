@@ -57,6 +57,7 @@ interface VaultState {
 interface AgentHealth {
   ok: boolean;
   agentPublicKey?: string;
+  vaultOwner?: string;
   agentBalanceSol?: number;
   env?: {
     openrouterConfigured?: boolean;
@@ -1365,6 +1366,7 @@ const AppContent = () => {
           Agent interval: {agentIntervalMinutes} minute(s)
           {'\n'}Status: {agentStatus}
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
+          {'\n'}Vault owner: {agentHealth?.vaultOwner || 'not_set'}
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
           {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
           {'\n'}OpenRouter key: {agentHealth?.env?.openrouterKeySource || 'not found'}
