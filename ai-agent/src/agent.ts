@@ -3,7 +3,11 @@ import axios from 'axios';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
 import * as anchor from '@project-serum/anchor';
+import fs from 'fs';
+import path from 'path';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { NATIVE_MINT } from '@solana/spl-token';
+import { DEVNET_PROGRAM_ID, Raydium, TxVersion } from '@raydium-io/raydium-sdk-v2';
 import { getAgentMarketSliceFromLab } from './marketLab';
 
 dotenv.config();
@@ -36,12 +40,92 @@ const VALIDATED_MODEL = AVAILABLE_MODELS.includes(OPENROUTER_MODEL)
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 const AGENT_EXECUTION_MODE = 'onchain';
 const MARKET_LAB_MODE = String(process.env.MARKET_LAB_MODE || '').toLowerCase() === 'true' || process.env.MARKET_LAB_MODE === '1';
+const SWAP_PROVIDER = String(process.env.SWAP_PROVIDER || 'raydium').toLowerCase();
+const DEVNET_TOKEN_SET_PATH = String(process.env.DEVNET_TOKEN_SET_PATH || '').trim();
+const RAYDIUM_POOL_REGISTRY_PATH = String(process.env.RAYDIUM_POOL_REGISTRY_PATH || '').trim();
+
+interface DevnetTokenRecord {
+  symbol: string;
+  mint: string;
+  decimals: number;
+}
+
+interface RaydiumPoolRecord {
+  symbol: string;
+  tokenMint: string;
+  tokenDecimals: number;
+  poolId: string;
+}
+
+const resolveExistingPath = (candidate: string): string | null => {
+  if (!candidate) return null;
+  const p = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
+  return fs.existsSync(p) ? p : null;
+};
+
+const tokenSetFile =
+  resolveExistingPath(DEVNET_TOKEN_SET_PATH)
+  || resolveExistingPath('devnet-token-set.json')
+  || resolveExistingPath('ai-agent/devnet-token-set.json');
+
+const poolRegistryFile =
+  resolveExistingPath(RAYDIUM_POOL_REGISTRY_PATH)
+  || resolveExistingPath('devnet-raydium-pools.json')
+  || resolveExistingPath('ai-agent/devnet-raydium-pools.json');
+
+const loadDevnetTokenMap = (): Record<'SOL' | 'RAY' | 'ORCA', DevnetTokenRecord> | null => {
+  try {
+    if (!tokenSetFile) return null;
+    const parsed = JSON.parse(fs.readFileSync(tokenSetFile, 'utf8'));
+    const tokens: any[] = Array.isArray(parsed?.tokens) ? parsed.tokens : [];
+    const bySymbol = new Map(tokens.map((t) => [String(t.symbol || '').toUpperCase(), t]));
+    const solx = bySymbol.get('SOLX');
+    const rayx = bySymbol.get('RAYX');
+    const orcx = bySymbol.get('ORCX');
+    if (!solx || !rayx || !orcx) return null;
+    return {
+      SOL: { symbol: 'SOLX', mint: String(solx.mint), decimals: Number(solx.decimals || 6) },
+      RAY: { symbol: 'RAYX', mint: String(rayx.mint), decimals: Number(rayx.decimals || 6) },
+      ORCA: { symbol: 'ORCX', mint: String(orcx.mint), decimals: Number(orcx.decimals || 6) },
+    };
+  } catch {
+    return null;
+  }
+};
+
+const loadRaydiumPoolMap = (): Partial<Record<'SOL' | 'RAY' | 'ORCA', RaydiumPoolRecord>> => {
+  try {
+    if (!poolRegistryFile) return {};
+    const parsed = JSON.parse(fs.readFileSync(poolRegistryFile, 'utf8'));
+    const pools: any[] = Array.isArray(parsed?.pools) ? parsed.pools : [];
+    const map: Partial<Record<'SOL' | 'RAY' | 'ORCA', RaydiumPoolRecord>> = {};
+    for (const p of pools) {
+      const sym = String(p.symbol || '').toUpperCase();
+      if (!['SOL', 'RAY', 'ORCA'].includes(sym)) continue;
+      map[sym as 'SOL' | 'RAY' | 'ORCA'] = {
+        symbol: sym,
+        tokenMint: String(p.tokenMint),
+        tokenDecimals: Number(p.tokenDecimals || 6),
+        poolId: String(p.poolId),
+      };
+    }
+    return map;
+  } catch {
+    return {};
+  }
+};
+
+const devnetTokenMap = loadDevnetTokenMap();
+const raydiumPoolMap = loadRaydiumPoolMap();
 
 // Log environment configuration at startup
 console.log('[AGENT INIT] Environment Variables:');
 console.log(`  AGENT_DEMO_MODE=${process.env.AGENT_DEMO_MODE} (parsed as: ${AGENT_DEMO_MODE})`);
 console.log(`  AGENT_EXECUTION_MODE=${AGENT_EXECUTION_MODE} (demo simulation disabled)`);
 console.log(`  MARKET_LAB_MODE=${process.env.MARKET_LAB_MODE} (parsed as: ${MARKET_LAB_MODE})`);
+console.log(`  SWAP_PROVIDER=${SWAP_PROVIDER}`);
+console.log(`  DEVNET_TOKEN_SET_PATH=${tokenSetFile || 'not_found'}`);
+console.log(`  RAYDIUM_POOL_REGISTRY_PATH=${poolRegistryFile || 'not_found'}`);
 console.log(`  OPENROUTER_MODEL=${OPENROUTER_MODEL} (validated: ${VALIDATED_MODEL})`);
 console.log(`  Available models: ${AVAILABLE_MODELS.join(', ')}`);
 console.log(`  OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY ? '***' : 'NOT SET'}`);
@@ -113,6 +197,62 @@ function parseSecretKey(secret: string): Uint8Array {
 
 const keypair = anchor.web3.Keypair.fromSecretKey(parseSecretKey(SECRET_KEY));
 const connection = new Connection(ENDPOINT, 'processed');
+let raydiumClient: Raydium | null = null;
+
+const getRaydiumClient = async (): Promise<Raydium> => {
+  if (raydiumClient) return raydiumClient;
+  raydiumClient = await Raydium.load({
+    connection,
+    cluster: 'devnet',
+    owner: keypair,
+    disableLoadToken: true,
+    disableFeatureCheck: true,
+  });
+  return raydiumClient;
+};
+
+const executeRaydiumSwap = async (
+  symbolIn: 'SOL' | 'RAY' | 'ORCA',
+  symbolOut: 'SOL' | 'RAY' | 'ORCA',
+  inputAmountRaw: number,
+): Promise<string> => {
+  if (inputAmountRaw <= 0 || !Number.isFinite(inputAmountRaw)) {
+    throw new Error('Raydium swap input amount must be positive');
+  }
+
+  const tradeSymbol = symbolIn === 'SOL' ? symbolOut : symbolIn;
+  const pool = raydiumPoolMap[tradeSymbol];
+  if (!pool?.poolId) {
+    throw new Error(`No Raydium devnet pool configured for ${tradeSymbol}. Create pools and set RAYDIUM_POOL_REGISTRY_PATH.`);
+  }
+
+  const inMint = symbolIn === 'SOL' ? NATIVE_MINT.toBase58() : (devnetTokenMap?.[symbolIn]?.mint || pool.tokenMint);
+  const outMint = symbolOut === 'SOL' ? NATIVE_MINT.toBase58() : (devnetTokenMap?.[symbolOut]?.mint || pool.tokenMint);
+
+  const raydium = await getRaydiumClient();
+  const { poolInfo } = await raydium.cpmm.getPoolInfoFromRpc(pool.poolId);
+  const inputAmount = new anchor.BN(Math.max(1, Math.floor(inputAmountRaw)));
+
+  // Use very conservative minimum-out floor (1 raw unit) so on-chain price decides actual output.
+  const txData = await raydium.cpmm.swap({
+    poolInfo,
+    baseIn: poolInfo.mintA.address === inMint,
+    fixedOut: false,
+    slippage: 0.03,
+    inputAmount,
+    swapResult: {
+      inputAmount,
+      outputAmount: new anchor.BN(1),
+    },
+    txVersion: TxVersion.LEGACY,
+    config: {
+      associatedOnly: false,
+    },
+  });
+
+  const { txId } = await txData.execute({ sendAndConfirm: true });
+  return txId;
+};
 
 const idl = {
   version: '0.1.0',
@@ -578,9 +718,9 @@ const buildPrompt = (market: any, heliusSignals: any) => {
 };
 
 const symbolToMint: Record<string, string> = {
-  RAY: '4k3Dyjzvzp8eB5Vq7hvh8BUkQ9dFJz2AxKTeoBZGPi7u',
-  ORCA: 'orca7wuirT1o1sPo2Ng76gGgneJzmoGWaa6D4wvkPsi',
-  SOL: 'So11111111111111111111111111111111111111112',
+  RAY: devnetTokenMap?.RAY?.mint || '4k3Dyjzvzp8eB5Vq7hvh8BUkQ9dFJz2AxKTeoBZGPi7u',
+  ORCA: devnetTokenMap?.ORCA?.mint || 'orca7wuirT1o1sPo2Ng76gGgneJzmoGWaa6D4wvkPsi',
+  SOL: devnetTokenMap?.SOL?.mint || 'So11111111111111111111111111111111111111112',
 };
 
 interface Decision {
@@ -791,6 +931,7 @@ export const getAgentHealth = async () => {
       openrouterModel: VALIDATED_MODEL,
       demoMode: AGENT_DEMO_MODE,
       executionMode: AGENT_EXECUTION_MODE,
+      swapProvider: SWAP_PROVIDER,
       marketLabMode: MARKET_LAB_MODE,
       heliusConfigured: Boolean(HELIUS_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
@@ -885,12 +1026,47 @@ export const runAgentOnce = async () => {
     if (agentBal <= tradeLamports + 10_000_000) {
       throw new Error(`Insufficient SOL for on-chain BUY ${symbol}. Need > ${(tradeLamports + 10_000_000) / 1e9} SOL including fee buffer.`);
     }
-    swapTx = await executeJupiterSwap('SOL', symbol, tradeLamports);
-    console.log(`Jupiter BUY ${symbol}: ${swapTx}`);
+
+    if (SWAP_PROVIDER === 'raydium') {
+      swapTx = await executeRaydiumSwap('SOL', symbol, tradeLamports);
+      console.log(`Raydium BUY ${symbol}: ${swapTx}`);
+    } else {
+      swapTx = await executeJupiterSwap('SOL', symbol, tradeLamports);
+      console.log(`Jupiter BUY ${symbol}: ${swapTx}`);
+    }
   } else if (action === 'sell') {
-    // Sell uses SOL-sized amount approximation; if route/balance missing, fail (no simulation).
-    swapTx = await executeJupiterSwap(symbol, 'SOL', tradeLamports);
-    console.log(`Jupiter SELL ${symbol}: ${swapTx}`);
+    if (SWAP_PROVIDER === 'raydium') {
+      const tokenDecimals = devnetTokenMap?.[symbol]?.decimals || 6;
+      const desiredRaw = BigInt(Math.max(1, Math.floor(amountValue * Math.pow(10, tokenDecimals))));
+      const pool = raydiumPoolMap[symbol];
+      if (!pool?.tokenMint) {
+        throw new Error(`Raydium pool/token config missing for ${symbol}.`);
+      }
+
+      // Cap sell amount by current token ATA balance to avoid swap failure.
+      let balanceRaw = 0n;
+      try {
+        const ata = await anchor.utils.token.associatedAddress({
+          mint: new PublicKey(pool.tokenMint),
+          owner: keypair.publicKey,
+        });
+        const bal = await connection.getTokenAccountBalance(new PublicKey(ata));
+        balanceRaw = BigInt(bal?.value?.amount || '0');
+      } catch {
+        balanceRaw = 0n;
+      }
+      if (balanceRaw <= 0n) {
+        throw new Error(`No ${symbol} token balance to SELL on Raydium.`);
+      }
+
+      const sellRaw = Number(balanceRaw < desiredRaw ? balanceRaw : desiredRaw);
+      swapTx = await executeRaydiumSwap(symbol, 'SOL', sellRaw);
+      console.log(`Raydium SELL ${symbol}: ${swapTx}`);
+    } else {
+      // Jupiter path keeps SOL-sized approximation.
+      swapTx = await executeJupiterSwap(symbol, 'SOL', tradeLamports);
+      console.log(`Jupiter SELL ${symbol}: ${swapTx}`);
+    }
   }
   // ──────────────────────────────────────────────────────────────────────────
 

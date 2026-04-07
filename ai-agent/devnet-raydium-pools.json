@@ -1,0 +1,29 @@
+{
+  "createdAt": "2026-04-07T14:51:03.073Z",
+  "owner": "817TVjn5c8MscKk8qokRPFxtZ3ZPeT4FynaVGwftTmn7",
+  "rpc": "https://api.devnet.solana.com",
+  "cpmmConfigId": "5MxLgy9oPdTC3YgkiePHqr3EoCRD9uLVYRQS2ANAs7wy",
+  "pools": [
+    {
+      "symbol": "SOL",
+      "tokenMint": "13E3ubMV4Bvgc1Yb1X3UKSp2FZdEX7y5rhpzFuynaQDY",
+      "tokenDecimals": 6,
+      "poolId": "PfCtos78LqH3C5YbXgHdG8AuS1JuvN3jojoFy6RPL85",
+      "txId": "4mKMaDZoevJgW1rXnB4Xpt2gMpTYEYG5dAMKAtEWbsdnJVjibRrGdgAUBZvUQTyaguaykAr5Wdc7124NAsnn89pw"
+    },
+    {
+      "symbol": "RAY",
+      "tokenMint": "3g8JKPvL1Zh7CowALVNHwgtQ8CNn7V21vMu6ZNsGnu98",
+      "tokenDecimals": 6,
+      "poolId": "GWkaZfC5cCzgyDdoGBir5Gmcaostq3Bsitra63ermGFw",
+      "txId": "42BN6Gv5PbMzqrNSStbg3cHPZnN8wke8V24tVVtgS1kkZqUexhkM2j7vc3R94X98B6pnjhiJLvr1eqhjZY2d9dzj"
+    },
+    {
+      "symbol": "ORCA",
+      "tokenMint": "FTPqdxg7QYhXjcZwDmQ2JLFaVWUEV2Wo4wb8rkE5Nk4X",
+      "tokenDecimals": 6,
+      "poolId": "EcNmo4C76wixS8zvNXE3ZNPsfh2mWFo82Npes6HujpwS",
+      "txId": "FgvagcUgRQKph8SN6To3vxEvgMCzN9YAWQLJGG4X37pTtZg9bxtgZPBipJf39687rjfRC2vtRL7FLg3g2TAJet8"
+    }
+  ]
+}
