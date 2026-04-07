@@ -30,6 +30,23 @@ const getOpenRouterApiKey = (): string => {
   return String(process.env[source] || '').trim();
 };
 
+// ── Request throttling to prevent rate limiting ────────────────────────────
+const OPENROUTER_MIN_REQUEST_INTERVAL_MS = 2000; // Minimum 2s between requests
+let lastOpenRouterRequestTime = 0;
+
+const throttleOpenRouterRequest = async () => {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastOpenRouterRequestTime;
+  
+  if (timeSinceLastRequest < OPENROUTER_MIN_REQUEST_INTERVAL_MS) {
+    const delayMs = OPENROUTER_MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
+    console.log(`Throttling OpenRouter request: waiting ${delayMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  
+  lastOpenRouterRequestTime = Date.now();
+};
+
 // Jupiter v6 API (mainnet; gracefully skipped with paper-trade fallback on devnet)
 const JUPITER_API = 'https://quote-api.jup.ag/v6';
 // Mainnet mint addresses for Jupiter routes
@@ -280,7 +297,16 @@ const formatProviderError = (provider: string, error: unknown): string => {
 
 const formatOpenRouterError = (error: unknown): string => {
   const e = error as any;
-  const status = e?.statusCode || e?.status || e?.response?.status;
+
+  // Try multiple paths to extract status code from OpenRouter SDK error
+  let status = e?.statusCode || e?.status || e?.response?.status;
+
+  // If no status yet, check if error has metadata or is from axios
+  if (!status && (e?.response?.statusCode)) {
+    status = e.response.statusCode;
+  }
+
+  // Extract error code/message from nested structures
   const code = e?.body?.error?.code || e?.code || e?.response?.data?.error?.code;
   const message =
     e?.body?.error?.message
@@ -289,6 +315,10 @@ const formatOpenRouterError = (error: unknown): string => {
     || e?.message
     || 'OpenRouter request failed';
 
+  // For rate limiting, include Retry-After if available
+  const retryAfter = e?.response?.headers?.['retry-after'] || e?.response?.data?.retry_after;
+  const retryInfo = retryAfter ? ` (retry after ${retryAfter}s)` : '';
+
   const details = [
     status ? `HTTP ${status}` : null,
     code ? `code=${code}` : null,
@@ -296,9 +326,21 @@ const formatOpenRouterError = (error: unknown): string => {
     .filter(Boolean)
     .join(', ');
 
+  // Debug: log full error structure if status is 429
+  if (status === 429) {
+    console.error('OpenRouter 429 Rate Limit - Full error context:', JSON.stringify({
+      statusCode: e?.statusCode,
+      status: e?.status,
+      responseStatus: e?.response?.status,
+      body: e?.body,
+      responseData: e?.response?.data,
+      message: e?.message,
+    }, null, 2));
+  }
+
   return details
-    ? `OpenRouter ${details}: ${String(message)}`
-    : `OpenRouter: ${String(message)}`;
+    ? `OpenRouter ${details}: ${String(message)}${retryInfo}`
+    : `OpenRouter: ${String(message)}${retryInfo}`;
 };
 
 const getHeliusSignals = async () => {
@@ -384,7 +426,7 @@ const parseJsonFromModelText = (text: string): any => {
   }
 };
 
-const askLlm = async (prompt: string) => {
+const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
   const openrouterApiKey = getOpenRouterApiKey();
   if (!openrouterApiKey) {
     openrouterError = 'OpenRouter API key is not configured. Set OPENROUTER_API_KEY (or OPENROUTER_API_TOKEN / OPENROUTER_KEY).';
@@ -392,6 +434,9 @@ const askLlm = async (prompt: string) => {
   }
 
   try {
+    // Apply client-side rate limiting to prevent 429 errors
+    await throttleOpenRouterRequest();
+
     const client = new OpenRouter({ apiKey: openrouterApiKey });
     const stream = await client.chat.send({
       chatRequest: {
@@ -419,8 +464,19 @@ const askLlm = async (prompt: string) => {
     return parseJsonFromModelText(text);
   } catch (error) {
     const e = error as any;
+    const status = e?.statusCode || e?.status || e?.response?.status;
+
+    // Handle rate limiting with exponential backoff (max 3 retries)
+    if (status === 429 && retryCount < 3) {
+      const backoffMs = 1000 * Math.pow(2, retryCount); // 1s, 2s, 4s
+      console.warn(`OpenRouter rate limited. Retrying in ${backoffMs}ms (attempt ${retryCount + 1}/3)`);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      return askLlm(prompt, retryCount + 1);
+    }
+
     openrouterError = formatOpenRouterError(error);
-    console.warn('OpenRouter request failed:', e?.statusCode || e?.status, e?.body || e?.response?.data || e?.message);
+    const logStatus = e?.statusCode || e?.status || 'unknown';
+    console.warn('OpenRouter request failed:', logStatus, e?.body || e?.response?.data || e?.message);
     return null;
   }
 };
