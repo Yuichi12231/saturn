@@ -1182,13 +1182,16 @@ const AppContent = () => {
       setAgentStatus('Unable to read backend agent wallet. Ensure backend is running.');
       return;
     }
+    const startWarnings: string[] = [];
+
     if (vault.agentAuthority.toBase58() !== agentWallet) {
       const synced = await setVaultAgentAuthority(agentWallet);
       if (!synced) {
-        setAgentStatus('Failed to sync agent authority. See vault status details above.');
-        return;
+        startWarnings.push('authority sync failed');
+        setAgentStatus('Authority sync failed. Continuing with backend start attempt...');
+      } else {
+        setAgentStatus('Agent authority synced. Please sign to enable agent control.');
       }
-      setAgentStatus('Agent authority synced. Please sign to enable agent control.');
     }
     setAgentStatus('Please sign wallet confirmation to start the agent.');
     const consented = await requestStartConsentSignature();
@@ -1199,8 +1202,8 @@ const AppContent = () => {
     if (!vaultEnabled) {
       const enabled = await toggleVaultMode(vaultMode, true);
       if (!enabled) {
-        setAgentStatus('Failed to enable vault for agent start. See vault status details above.');
-        return;
+        startWarnings.push('vault enable failed');
+        setAgentStatus('Vault enable failed. Continuing with backend start attempt...');
       }
     }
 
@@ -1225,12 +1228,35 @@ const AppContent = () => {
       await refreshAgentTrades();
     }
 
-    // Always resync from backend after attempting start so the button state
-    // reflects the actual scheduler state even if the direct response was partial.
-    await refreshAgentStatus();
+    // Verify actual backend state explicitly after start attempt.
+    const statusAfter = await callAgentApi('/api/agent/status');
+    if (statusAfter) {
+      setAgentRunning(Boolean(statusAfter.running));
+      if (typeof statusAfter.intervalMinutes === 'number' && statusAfter.intervalMinutes > 0) {
+        setAgentIntervalMinutes(statusAfter.intervalMinutes);
+      }
+      if (statusAfter.agentPublicKey) {
+        setBackendAgentWallet(statusAfter.agentPublicKey);
+      }
+      if (statusAfter.lastAction) {
+        setRecommendation(statusAfter.lastAction);
+      }
+
+      if (statusAfter.running) {
+        setAgentStatus(startWarnings.length > 0
+          ? `Agent started with warnings: ${startWarnings.join(', ')}.`
+          : (statusAfter.message || 'Agent started.'));
+      } else {
+        const base = statusAfter.message || 'Backend did not switch to running state.';
+        setAgentStatus(startWarnings.length > 0
+          ? `Start failed: ${base} Warnings: ${startWarnings.join(', ')}.`
+          : `Start failed: ${base}`);
+      }
+    }
+
     await refreshAgentHealth();
     await refreshAgentTrades();
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades, requestStartConsentSignature, refreshAgentStatus, refreshAgentHealth]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades, requestStartConsentSignature, refreshAgentHealth]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
