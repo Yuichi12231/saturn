@@ -1222,7 +1222,13 @@ const AppContent = () => {
       }
       await refreshAgentTrades();
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades, requestStartConsentSignature]);
+
+    // Always resync from backend after attempting start so the button state
+    // reflects the actual scheduler state even if the direct response was partial.
+    await refreshAgentStatus();
+    await refreshAgentHealth();
+    await refreshAgentTrades();
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades, requestStartConsentSignature, refreshAgentStatus, refreshAgentHealth]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
