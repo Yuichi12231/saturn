@@ -14,12 +14,31 @@ const ENDPOINT = (
   || process.env.ALCHEMY_RPC_URL
   || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8'
 ).trim();
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
+
+// ── Available OpenRouter Models ────────────────────────────────────────────
+const AVAILABLE_MODELS = [
+  'nvidia/nemotron-3-super-120b-a12b:free',      // Latest Nemotron, best quality
+  'minimax/minimax-m2.5:free',                   // Minimax M2.5
+  'arcee-ai/trinity-large-preview:free',         // Trinity Large
+  'qwen/qwen3.6-plus:free',                      // Fallback (original)
+];
+
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL 
+  ? String(process.env.OPENROUTER_MODEL).trim()
+  : AVAILABLE_MODELS[0]; // Default to Nemotron (best free model)
+
+// Validate model is in available list, otherwise use default
+const VALIDATED_MODEL = AVAILABLE_MODELS.includes(OPENROUTER_MODEL) 
+  ? OPENROUTER_MODEL 
+  : AVAILABLE_MODELS[0];
+
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 
 // Log environment configuration at startup
 console.log('[AGENT INIT] Environment Variables:');
 console.log(`  AGENT_DEMO_MODE=${process.env.AGENT_DEMO_MODE} (parsed as: ${AGENT_DEMO_MODE})`);
+console.log(`  OPENROUTER_MODEL=${OPENROUTER_MODEL} (validated: ${VALIDATED_MODEL})`);
+console.log(`  Available models: ${AVAILABLE_MODELS.join(', ')}`);
 console.log(`  OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY ? '***' : 'NOT SET'}`);
 console.log(`  SOLANA_RPC_URL=${process.env.SOLANA_RPC_URL || 'using default'}`);
 console.log(`  HELIUS_API_KEY=${process.env.HELIUS_API_KEY ? '***' : 'NOT SET'}`);
@@ -453,7 +472,7 @@ const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
     const client = new OpenRouter({ apiKey: openrouterApiKey });
     const stream = await client.chat.send({
       chatRequest: {
-        model: OPENROUTER_MODEL,
+        model: VALIDATED_MODEL,
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 400,
         temperature: 0.3,
@@ -755,7 +774,7 @@ export const getAgentHealth = async () => {
     env: {
       openrouterConfigured: Boolean(openrouterApiKey),
       openrouterKeySource,
-      openrouterModel: OPENROUTER_MODEL,
+      openrouterModel: VALIDATED_MODEL,
       demoMode: AGENT_DEMO_MODE,
       heliusConfigured: Boolean(HELIUS_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
