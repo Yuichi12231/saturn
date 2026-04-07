@@ -1,6 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
+import path from 'path';
 import { getAgentHealth, getAgentState, getTradeHistory, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
 
 dotenv.config();
@@ -11,6 +12,7 @@ const port = Number(process.env.PORT || process.env.AGENT_PORT || 3001);
 app.use(cors());
 app.use(express.json());
 
+// API routes
 app.get('/api/agent/status', (req: Request, res: Response) => {
   res.json(getAgentState());
 });
@@ -61,6 +63,19 @@ app.post('/api/agent/trigger', async (req: Request, res: Response) => {
     console.error('Trigger failed:', (error as any).message || error);
     res.status(500).json({ error: 'Agent trigger failed' });
   }
+});
+
+// Serve static frontend files
+const publicPath = path.join(__dirname, '../public');
+app.use(express.static(publicPath));
+
+// SPA fallback: serve index.html for non-API routes
+app.get('*', (req: Request, res: Response) => {
+  res.sendFile(path.join(publicPath, 'index.html'), (err) => {
+    if (err) {
+      res.status(404).json({ error: 'Not found' });
+    }
+  });
 });
 
 app.listen(port, () => {
