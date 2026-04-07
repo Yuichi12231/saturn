@@ -887,6 +887,11 @@ const AppContent = () => {
   }, [callAgentApi]);
 
   const startRemoteAgent = useCallback(async () => {
+    if (!anchorWallet || !program) {
+      setAgentStatus('Connect wallet first to confirm consent with a signed transaction.');
+      return;
+    }
+
     if (!agentBackendConfigured) {
       setStatus('Set VITE_AGENT_API_URL to your public backend agent service, then redeploy frontend.');
       return;
@@ -897,41 +902,33 @@ const AppContent = () => {
       return;
     }
 
-    const isDemoMode = agentHealth?.env?.demoMode === true;
+    // Start always requires explicit wallet consent via signed on-chain tx.
+    if (!vault) {
+      setStatus('Create vault first before starting the agent.');
+      return;
+    }
 
-    if (!isDemoMode) {
-      // Non-demo mode: need wallet + vault + on-chain authority sync
-      if (!anchorWallet || !program) {
-        setAgentStatus('Connect wallet first to select your vault owner address.');
+    let agentWallet = backendAgentWallet;
+    if (!agentWallet) {
+      const statusResult = await callAgentApi('/api/agent/status');
+      if (statusResult?.agentPublicKey) {
+        agentWallet = statusResult.agentPublicKey;
+        setBackendAgentWallet(statusResult.agentPublicKey);
+      }
+    }
+    if (!agentWallet) {
+      setStatus('Unable to read backend agent wallet. Ensure backend is running.');
+      return;
+    }
+    if (vault.agentAuthority.toBase58() !== agentWallet) {
+      const synced = await setVaultAgentAuthority(agentWallet);
+      if (!synced) {
         return;
       }
-      if (!vault) {
-        setStatus('Create vault first before starting the agent.');
-        return;
-      }
-
-      let agentWallet = backendAgentWallet;
-      if (!agentWallet) {
-        const statusResult = await callAgentApi('/api/agent/status');
-        if (statusResult?.agentPublicKey) {
-          agentWallet = statusResult.agentPublicKey;
-          setBackendAgentWallet(statusResult.agentPublicKey);
-        }
-      }
-      if (!agentWallet) {
-        setStatus('Unable to read backend agent wallet. Ensure backend is running.');
-        return;
-      }
-      if (vault.agentAuthority.toBase58() !== agentWallet) {
-        const synced = await setVaultAgentAuthority(agentWallet);
-        if (!synced) {
-          return;
-        }
-        setStatus('Agent authority synced. Starting agent...');
-      }
-      if (!vaultEnabled) {
-        await toggleVaultMode(vaultMode, true);
-      }
+      setStatus('Agent authority synced. Please sign to enable agent control.');
+    }
+    if (!vaultEnabled) {
+      await toggleVaultMode(vaultMode, true);
     }
 
     const vaultOwner = anchorWallet?.publicKey?.toBase58() ?? agentHealth?.vaultOwner ?? '';
@@ -954,18 +951,15 @@ const AppContent = () => {
       }
       await refreshAgentTrades();
     }
-  }, [agentHealth, agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
     if (result) {
       setAgentRunning(result.running);
       setAgentStatus(result.message);
-      if (vaultEnabled) {
-        await toggleVaultMode(vaultMode, false);
-      }
     }
-  }, [callAgentApi, vaultEnabled, toggleVaultMode, vaultMode]);
+  }, [callAgentApi]);
 
   useEffect(() => {
     refreshAgentStatus();
