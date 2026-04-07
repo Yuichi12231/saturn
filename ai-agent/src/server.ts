@@ -1,7 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
-import { getAgentHealth, getAgentState, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
+import { getAgentHealth, getAgentState, getTradeHistory, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
 
 dotenv.config();
 
@@ -15,6 +15,10 @@ app.get('/api/agent/status', (req: Request, res: Response) => {
   res.json(getAgentState());
 });
 
+app.get('/api/agent/trades', (req: Request, res: Response) => {
+  res.json({ trades: getTradeHistory() });
+});
+
 app.get('/api/agent/health', async (req: Request, res: Response) => {
   try {
     const health = await getAgentHealth();
@@ -26,8 +30,9 @@ app.get('/api/agent/health', async (req: Request, res: Response) => {
 });
 
 app.post('/api/agent/start', async (req: Request, res: Response) => {
-  const { intervalMinutes, vaultOwner } = req.body ?? {};
+  const { intervalMinutes, vaultOwner, strategy } = req.body ?? {};
   const interval = typeof intervalMinutes === 'number' && intervalMinutes > 0 ? intervalMinutes : 1;
+  const selectedStrategy = ['auto', 'llm', 'rule'].includes(String(strategy)) ? String(strategy) as 'auto' | 'llm' | 'rule' : 'auto';
 
   if (typeof vaultOwner !== 'string' || !vaultOwner.trim()) {
     res.status(400).json({ error: 'vaultOwner is required' });
@@ -35,7 +40,7 @@ app.post('/api/agent/start', async (req: Request, res: Response) => {
   }
 
   try {
-    const status = await startAgentSchedule(interval, vaultOwner);
+    const status = await startAgentSchedule(interval, vaultOwner, selectedStrategy);
     res.json(status);
   } catch (error) {
     const message = (error as any)?.message || 'Failed to start agent';

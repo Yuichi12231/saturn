@@ -59,20 +59,20 @@ interface AgentHealth {
   agentPublicKey?: string;
   agentBalanceSol?: number;
   env?: {
-    geminiConfigured?: boolean;
-    geminiModel?: string;
+    openrouterConfigured?: boolean;
+    openrouterModel?: string;
     heliusConfigured?: boolean;
     birdeyeConfigured?: boolean;
     walletConfigured?: boolean;
   };
   checks?: {
-    gemini?: string;
+    openrouter?: string;
     helius?: string;
     birdeye?: string;
     marketData?: string;
   };
   errors?: {
-    gemini?: string | null;
+    openrouter?: string | null;
     helius?: string | null;
     birdeye?: string | null;
     marketData?: string | null;
@@ -1343,8 +1343,8 @@ const AppContent = () => {
           {'\n'}Status: {agentStatus}
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
-          {'\n'}Gemini: {agentHealth?.checks?.gemini || 'unknown'}
-          {'\n'}Model: {agentHealth?.env?.geminiModel || 'unknown'}
+          {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
+          {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
           {'\n'}BirdEye: {agentHealth?.checks?.birdeye || 'unknown'}
           {'\n'}MarketData: {agentHealth?.checks?.marketData || 'unknown'}
@@ -1379,10 +1379,10 @@ const AppContent = () => {
             ))}
           </div>
         )}
-        {(agentHealth?.errors?.gemini || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
+        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
           <div style={{ marginTop: 10, color: '#f59e0b' }}>
             <div>API diagnostics:</div>
-            {agentHealth?.errors?.gemini && <div>Gemini error: {agentHealth.errors.gemini}</div>}
+            {agentHealth?.errors?.openrouter && <div>OpenRouter error: {agentHealth.errors.openrouter}</div>}
             {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
             {agentHealth?.errors?.birdeye && <div>BirdEye error: {agentHealth.errors.birdeye}</div>}
             {agentHealth?.errors?.marketData && <div>MarketData error: {agentHealth.errors.marketData}</div>}

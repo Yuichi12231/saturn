@@ -13,9 +13,9 @@ const ENDPOINT = (
   || process.env.ALCHEMY_RPC_URL
   || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8'
 ).trim();
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const SECRET_KEY = process.env.AGENT_WALLET_SECRET_KEY;
@@ -329,55 +329,48 @@ const parseJsonFromModelText = (text: string): any => {
 };
 
 const askLlm = async (prompt: string) => {
-  if (!GEMINI_API_KEY) {
-    geminiError = 'GEMINI_API_KEY is not configured';
+  if (!OPENROUTER_API_KEY) {
+    openrouterError = 'OPENROUTER_API_KEY is not configured';
     return null;
   }
 
   try {
-    const url = `${GEMINI_BASE_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const response = await axios.post(
-      url,
+      OPENROUTER_BASE_URL,
       {
-        systemInstruction: {
-          parts: [
-            {
-              text: 'You are an AI asset manager for a Solana Vault. Analyze market data, on-chain signals, and risk. Respond with JSON only.',
-            },
-          ],
-        },
-        contents: [
+        model: OPENROUTER_MODEL,
+        messages: [
           {
             role: 'user',
-            parts: [{ text: prompt }],
+            content: prompt,
           },
         ],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 220,
+        temperature: 0.3,
+        max_tokens: 220,
+        reasoning: {
+          enabled: true,
         },
       },
       {
         headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
         },
         timeout: 20000,
       },
     );
 
-    const text = response.data?.candidates?.[0]?.content?.parts
-      ?.map((part: any) => String(part?.text || ''))
-      .join('\n');
+    const text = response.data?.choices?.[0]?.message?.content;
     if (!text) {
-      throw new Error('Gemini did not return a response.');
+      throw new Error('OpenRouter did not return a response.');
     }
 
-    geminiError = null;
+    openrouterError = null;
     return parseJsonFromModelText(text);
   } catch (error) {
     const axiosError = error as any;
-    geminiError = formatProviderError('Gemini', error);
-    console.warn('Gemini request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
+    openrouterError = formatProviderError('OpenRouter', error);
+    console.warn('OpenRouter request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
 };
@@ -432,7 +425,7 @@ let lastMessage = 'Ready to run.';
 let running = false;
 let currentVaultOwner: PublicKey | null = null;
 let lastError: string | null = null;
-let geminiError: string | null = null;
+let openrouterError: string | null = null;
 let heliusError: string | null = null;
 let birdeyeError: string | null = null;
 let marketDataError: string | null = null;
@@ -558,7 +551,7 @@ export const getTradeHistory = () => tradeHistory.slice(0, 50);
 export const getAgentHealth = async () => {
   const balanceLamports = await connection.getBalance(keypair.publicKey);
 
-  const geminiStatus = !GEMINI_API_KEY ? 'not_configured' : geminiError ? 'error' : 'configured';
+  const openrouterStatus = !OPENROUTER_API_KEY ? 'not_configured' : openrouterError ? 'error' : 'configured';
   const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
   const birdeyeStatus = !BIRDEYE_API_KEY ? 'not_configured' : birdeyeError ? 'error' : 'configured';
 
@@ -569,20 +562,20 @@ export const getAgentHealth = async () => {
     agentPublicKey: keypair.publicKey.toBase58(),
     agentBalanceSol: balanceLamports / 1e9,
     env: {
-      geminiConfigured: Boolean(GEMINI_API_KEY),
-      geminiModel: GEMINI_MODEL,
+      openrouterConfigured: Boolean(OPENROUTER_API_KEY),
+      openrouterModel: OPENROUTER_MODEL,
       heliusConfigured: Boolean(HELIUS_API_KEY),
       birdeyeConfigured: Boolean(BIRDEYE_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
     },
     checks: {
-      gemini: geminiStatus,
+      openrouter: openrouterStatus,
       helius: heliusStatus,
       birdeye: birdeyeStatus,
       marketData: marketDataError ? 'fallback_or_error' : 'configured',
     },
     errors: {
-      gemini: geminiError,
+      openrouter: openrouterError,
       helius: heliusError,
       birdeye: birdeyeError,
       marketData: marketDataError,
