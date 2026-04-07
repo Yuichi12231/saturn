@@ -23,7 +23,7 @@ const ENDPOINT = (
 // ── Gemini Model ──────────────────────────────────────────────────────────
 const GEMINI_MODEL = process.env.GEMINI_MODEL
   ? String(process.env.GEMINI_MODEL).trim()
-  : 'gemini-2.0-flash'; // Default: fast + free tier
+  : 'gemini-3-flash-preview'; // Default model
 const VALIDATED_MODEL = GEMINI_MODEL;
 
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
