@@ -206,6 +206,11 @@ const AppContent = () => {
   const [marketError, setMarketError] = useState('');
   const [marketHistory, setMarketHistory] = useState<MarketSnapshot[]>([]);
 
+  // Delete trade from history
+  const deleteAgentTrade = (index: number) => {
+    setAgentTrades((prev) => prev.filter((_, i) => i !== index));
+  };
+
   // Constants derived at module level — used as-is here.
   const AGENT_API_URL = AGENT_API_BASE_URL;
   const agentBackendConfigured = AGENT_BACKEND_CONFIGURED;
@@ -1414,14 +1419,48 @@ const AppContent = () => {
           </p>
         ) : (
           <div style={{ display: 'grid', gap: 8 }}>
-            {agentTrades.slice(0, 8).map((trade) => (
+            {agentTrades.slice(0, 8).map((trade, idx) => (
               <div key={`${trade.ts}-${trade.action}-${trade.symbol}-${trade.amount}`} style={{
                 border: '1px solid rgba(255,255,255,0.12)',
                 borderRadius: 12,
                 padding: 10,
                 background: 'rgba(255,255,255,0.03)',
+                position: 'relative',
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => deleteAgentTrade(idx)}
+                  style={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    color: '#ef4444',
+                    borderRadius: 6,
+                    width: 28,
+                    height: 28,
+                    cursor: 'pointer',
+                    fontSize: '1.1em',
+                    fontWeight: 'bold',
+                    padding: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.target as HTMLButtonElement).style.background = 'rgba(239, 68, 68, 0.4)';
+                    (e.target as HTMLButtonElement).style.borderColor = 'rgba(239, 68, 68, 0.6)';
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.target as HTMLButtonElement).style.background = 'rgba(239, 68, 68, 0.2)';
+                    (e.target as HTMLButtonElement).style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                  }}
+                  title="Delete this trade from history"
+                >
+                  ×
+                </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', paddingRight: 40 }}>
                   <strong style={{
                     color: trade.action === 'buy' ? '#22c55e' : trade.action === 'sell' ? '#ef4444' : trade.action === 'error' ? '#f59e0b' : '#9ca3af',
                   }}>

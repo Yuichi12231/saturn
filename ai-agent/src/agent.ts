@@ -469,12 +469,17 @@ const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
       }
     }
 
-    if (!text) {
-      throw new Error('OpenRouter returned empty content.');
+    if (!text || text.trim().length === 0) {
+      console.warn('OpenRouter returned empty or whitespace-only content');
+      throw new Error('OpenRouter returned empty response (may be rate limited or provider error).');
     }
 
     openrouterError = null;
-    return parseJsonFromModelText(text);
+    const parsed = parseJsonFromModelText(text);
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('OpenRouter response is not valid JSON or not an object.');
+    }
+    return parsed;
   } catch (error) {
     const e = error as any;
     const status = e?.statusCode || e?.status || e?.response?.status;
