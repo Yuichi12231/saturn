@@ -162,6 +162,51 @@ select:focus {
   margin-bottom: 10px;
 }
 
+.lab-switcher {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.lab-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d8f7ff;
+  border: 1px solid rgba(94, 224, 255, 0.25);
+  flex: 0 0 auto;
+}
+
+.lab-switch-btn.active {
+  background: linear-gradient(90deg, rgba(94, 224, 255, 0.2), rgba(34, 197, 94, 0.24));
+  border-color: rgba(34, 197, 94, 0.55);
+}
+
+.lab-token-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26);
+}
+
+.candles-wrap {
+  border: 1px solid rgba(94, 224, 255, 0.2);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(8, 12, 28, 0.92), rgba(12, 18, 40, 0.9));
+  padding: 8px;
+}
+
 .long-value {
   overflow-wrap: anywhere;
   word-break: break-word;

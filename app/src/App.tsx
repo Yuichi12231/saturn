@@ -155,6 +155,30 @@ interface LabToken {
   trend: 'bull' | 'bear' | 'sideways';
 }
 
+interface LabCandle {
+  ts: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+const LOGO_GRADIENTS: Record<string, string> = {
+  SOLX: 'linear-gradient(135deg,#22d3ee,#0ea5e9)',
+  RAYX: 'linear-gradient(135deg,#f472b6,#e879f9)',
+  ORCX: 'linear-gradient(135deg,#34d399,#10b981)',
+  ATM: 'linear-gradient(135deg,#f59e0b,#f97316)',
+  LQD: 'linear-gradient(135deg,#06b6d4,#22c55e)',
+  NOVA: 'linear-gradient(135deg,#8b5cf6,#6366f1)',
+  BETA: 'linear-gradient(135deg,#60a5fa,#2563eb)',
+  GAM: 'linear-gradient(135deg,#84cc16,#22c55e)',
+  ALF: 'linear-gradient(135deg,#fb7185,#f43f5e)',
+  DEL: 'linear-gradient(135deg,#14b8a6,#0d9488)',
+  OME: 'linear-gradient(135deg,#a78bfa,#7c3aed)',
+  SIG: 'linear-gradient(135deg,#f97316,#ef4444)',
+};
+
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
 
 const extractErrorMessage = (error: unknown): string => {
@@ -221,6 +245,9 @@ const AppContent = () => {
   const [marketError, setMarketError] = useState('');
   const [marketHistory, setMarketHistory] = useState<MarketSnapshot[]>([]);
   const [labTokens, setLabTokens] = useState<LabToken[]>([]);
+  const [selectedLabSymbol, setSelectedLabSymbol] = useState('SOLX');
+  const [labCandleLimit, setLabCandleLimit] = useState(80);
+  const [labCandles, setLabCandles] = useState<LabCandle[]>([]);
 
   // Constants derived at module level — used as-is here.
   const AGENT_API_URL = AGENT_API_BASE_URL;
@@ -300,6 +327,62 @@ const AppContent = () => {
     const heat = clampPercent(50 + mean * 5 - dispersion * 2);
     return { pressure, dispersion, heat };
   }, [tokenVisuals]);
+
+  const selectedLabToken = useMemo(
+    () => labTokens.find((t) => t.symbol === selectedLabSymbol) || null,
+    [labTokens, selectedLabSymbol],
+  );
+
+  const candleChart = useMemo(() => {
+    const width = 760;
+    const height = 260;
+    type CandleVisual = {
+      x: number;
+      wickTop: number;
+      wickBottom: number;
+      bodyTop: number;
+      bodyHeight: number;
+      up: boolean;
+      bodyW: number;
+    };
+    if (labCandles.length === 0) {
+      return { width, height, items: [] as CandleVisual[] };
+    }
+
+    const min = Math.min(...labCandles.map((c) => c.l));
+    const max = Math.max(...labCandles.map((c) => c.h));
+    const span = Math.max(max - min, 1e-9);
+    const padX = 18;
+    const usableWidth = width - padX * 2;
+    const step = usableWidth / Math.max(labCandles.length, 1);
+    const bodyW = Math.max(2, Math.min(10, step * 0.58));
+
+    const yOf = (price: number) => {
+      const normalized = (price - min) / span;
+      return height - 18 - normalized * (height - 36);
+    };
+
+    const items = labCandles.map((c, idx) => {
+      const x = padX + idx * step + step / 2;
+      const o = yOf(c.o);
+      const cl = yOf(c.c);
+      const h = yOf(c.h);
+      const l = yOf(c.l);
+      const bodyTop = Math.min(o, cl);
+      const bodyBottom = Math.max(o, cl);
+      return {
+        x,
+        wickTop: h,
+        wickBottom: l,
+        bodyTop,
+        bodyHeight: Math.max(1.4, bodyBottom - bodyTop),
+        up: c.c >= c.o,
+        bodyW,
+      };
+    });
+
+    return { width, height, items };
+  }, [labCandles]);
 
   const computeAnalytics = useCallback((normalized: Record<string, MarketEntry>, history: MarketSnapshot[]) => {
     const changes = Object.values(normalized).map((entry) => Number(entry.usd_24hr_change ?? 0));
@@ -889,9 +972,21 @@ const AppContent = () => {
   const refreshLabSnapshot = useCallback(async () => {
     const result = await callAgentApi('/api/lab/snapshot');
     if (result?.items && Array.isArray(result.items)) {
-      setLabTokens(result.items as LabToken[]);
+      const next = result.items as LabToken[];
+      setLabTokens(next);
+      if (next.length > 0 && !next.some((t) => t.symbol === selectedLabSymbol)) {
+        setSelectedLabSymbol(next[0].symbol);
+      }
     }
-  }, [callAgentApi]);
+  }, [callAgentApi, selectedLabSymbol]);
+
+  const refreshLabCandles = useCallback(async (symbol: string, limit = labCandleLimit) => {
+    if (!symbol) return;
+    const result = await callAgentApi(`/api/lab/candles/${symbol}?limit=${limit}`);
+    if (result?.candles && Array.isArray(result.candles)) {
+      setLabCandles(result.candles as LabCandle[]);
+    }
+  }, [callAgentApi, labCandleLimit]);
 
   const deleteAgentTrade = useCallback(async (index: number) => {
     // Optimistically remove from UI
@@ -989,7 +1084,8 @@ const AppContent = () => {
     refreshAgentHealth();
     refreshAgentTrades();
     refreshLabSnapshot();
-  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades, refreshLabSnapshot]);
+    refreshLabCandles(selectedLabSymbol, labCandleLimit);
+  }, [refreshAgentStatus, refreshAgentHealth, refreshAgentTrades, refreshLabSnapshot, refreshLabCandles, selectedLabSymbol, labCandleLimit]);
 
   useEffect(() => {
     // Poll faster when agent is running so new trades appear quickly
@@ -999,10 +1095,15 @@ const AppContent = () => {
       refreshAgentHealth();
       refreshAgentTrades();
       refreshLabSnapshot();
+      refreshLabCandles(selectedLabSymbol, labCandleLimit);
     }, pollMs);
 
     return () => clearInterval(interval);
-  }, [agentRunning, refreshAgentStatus, refreshAgentHealth, refreshAgentTrades, refreshLabSnapshot]);
+  }, [agentRunning, refreshAgentStatus, refreshAgentHealth, refreshAgentTrades, refreshLabSnapshot, refreshLabCandles, selectedLabSymbol, labCandleLimit]);
+
+  useEffect(() => {
+    refreshLabCandles(selectedLabSymbol, labCandleLimit);
+  }, [selectedLabSymbol, labCandleLimit, refreshLabCandles]);
 
   useEffect(() => {
     fetchMarketData();
@@ -1043,21 +1144,92 @@ const AppContent = () => {
           {labTokens.length === 0 ? (
             <p>Loading lab tokens...</p>
           ) : (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {labTokens.slice(0, 10).map((token) => (
-                <div key={token.symbol} style={{ border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, padding: 10, background: 'rgba(255,255,255,0.03)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <strong>{token.symbol} <span style={{ color: '#9ca3af', fontWeight: 400 }}>({token.name})</span></strong>
-                    <span style={{ color: token.momentum >= 0 ? '#22c55e' : '#ef4444' }}>${token.priceUsd.toFixed(4)}</span>
-                  </div>
-                  <div style={{ fontSize: '0.86em', color: '#9ca3af', marginTop: 4 }}>
-                    Trend: {token.trend} | Momentum: {(token.momentum * 100).toFixed(1)} | Fundamentals: {(token.fundamentals * 100).toFixed(1)} | Sentiment: {(token.sentiment * 100).toFixed(1)}
-                  </div>
-                  <div style={{ fontSize: '0.84em', color: '#cbd5e1', marginTop: 2 }}>
-                    Liquidity: ${token.liquidityUsd.toFixed(0)} | Vol(24h): ${token.volume24hUsd.toFixed(0)} | MCap: ${token.marketCapUsd.toFixed(0)}
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div className="lab-switcher">
+                {labTokens.map((token) => {
+                  const active = token.symbol === selectedLabSymbol;
+                  return (
+                    <button
+                      key={token.symbol}
+                      onClick={() => setSelectedLabSymbol(token.symbol)}
+                      className={`lab-switch-btn ${active ? 'active' : ''}`}
+                    >
+                      <span
+                        className="lab-token-logo"
+                        style={{ background: LOGO_GRADIENTS[token.symbol] || 'linear-gradient(135deg,#64748b,#334155)' }}
+                      >
+                        {token.symbol.slice(0, 2)}
+                      </span>
+                      <span>{token.symbol}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <strong style={{ fontSize: '1.05em' }}>{selectedLabToken?.symbol} <span style={{ color: '#9ca3af', fontWeight: 500 }}>({selectedLabToken?.name})</span></strong>
+                  <div style={{ color: '#cbd5e1', fontSize: '0.9em', marginTop: 3 }}>
+                    Trend: {selectedLabToken?.trend || 'n/a'} | Momentum: {selectedLabToken ? (selectedLabToken.momentum * 100).toFixed(1) : '0.0'} | Fundamentals: {selectedLabToken ? (selectedLabToken.fundamentals * 100).toFixed(1) : '0.0'} | Sentiment: {selectedLabToken ? (selectedLabToken.sentiment * 100).toFixed(1) : '0.0'}
                   </div>
                 </div>
-              ))}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ color: selectedLabToken && selectedLabToken.momentum >= 0 ? '#22c55e' : '#ef4444', fontSize: '1.06em', fontWeight: 700 }}>
+                    ${selectedLabToken?.priceUsd?.toFixed(4) || '0.0000'}
+                  </div>
+                  <div style={{ color: '#9ca3af', fontSize: '0.82em' }}>
+                    Liquidity ${selectedLabToken?.liquidityUsd?.toFixed(0) || '0'}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[40, 80, 120].map((limit) => (
+                  <button
+                    key={limit}
+                    onClick={() => setLabCandleLimit(limit)}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 999,
+                      background: labCandleLimit === limit ? 'linear-gradient(90deg,#06b6d4,#22c55e)' : 'rgba(255,255,255,0.06)',
+                      color: '#fff',
+                    }}
+                  >
+                    {limit} candles
+                  </button>
+                ))}
+              </div>
+
+              <div className="candles-wrap">
+                <svg viewBox={`0 0 ${candleChart.width} ${candleChart.height}`} width="100%" height="260" role="img" aria-label="Lab token candlestick chart">
+                  {candleChart.items.map((item, idx) => (
+                    <g key={`c-${idx}`}>
+                      <line
+                        x1={item.x}
+                        y1={item.wickTop}
+                        x2={item.x}
+                        y2={item.wickBottom}
+                        stroke={item.up ? '#22c55e' : '#ef4444'}
+                        strokeWidth="1.4"
+                        opacity="0.92"
+                      />
+                      <rect
+                        x={item.x - item.bodyW / 2}
+                        y={item.bodyTop}
+                        width={item.bodyW}
+                        height={item.bodyHeight}
+                        rx="1"
+                        fill={item.up ? '#22c55e' : '#ef4444'}
+                        opacity="0.92"
+                      />
+                    </g>
+                  ))}
+                </svg>
+              </div>
+
+              <div style={{ fontSize: '0.84em', color: '#cbd5e1' }}>
+                Vol(24h): ${selectedLabToken?.volume24hUsd?.toFixed(0) || '0'} | MCap: ${selectedLabToken?.marketCapUsd?.toFixed(0) || '0'}
+              </div>
             </div>
           )}
         </section>
