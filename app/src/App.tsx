@@ -26,6 +26,17 @@ const PROGRAM_ID = new PublicKey('csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y');
 const network = WalletAdapterNetwork.Devnet;
 const endpoint = (import.meta.env.VITE_SOLANA_RPC_URL || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8').trim();
 
+// These values are derived from env vars and hostname — never change at runtime,
+// so we compute them once at module level instead of on every render.
+const _runningLocalFrontend = typeof window !== 'undefined'
+  && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const AGENT_API_BASE_URL = (
+  import.meta.env.VITE_AGENT_API_URL || (_runningLocalFrontend ? 'http://localhost:3001' : '')
+).trim();
+const AGENT_BACKEND_CONFIGURED = AGENT_API_BASE_URL.length > 0;
+const BACKEND_LOOKS_LOCALHOST = AGENT_API_BASE_URL.includes('localhost') || AGENT_API_BASE_URL.includes('127.0.0.1');
+const BACKEND_URL_MISMATCH = !_runningLocalFrontend && BACKEND_LOOKS_LOCALHOST;
+
 interface TokenHolding {
   mint: PublicKey;
   amount: anchor.BN;
@@ -144,12 +155,10 @@ const AppContent = () => {
   const [marketError, setMarketError] = useState('');
   const [marketHistory, setMarketHistory] = useState<MarketSnapshot[]>([]);
 
-  const runningLocalFrontend = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
-  const AGENT_API_URL = (import.meta.env.VITE_AGENT_API_URL || (runningLocalFrontend ? 'http://localhost:3001' : '')).trim();
-  const agentBackendConfigured = AGENT_API_URL.length > 0;
-  const runningHostedFrontend = !runningLocalFrontend;
-  const backendLooksLocalhost = AGENT_API_URL.includes('localhost') || AGENT_API_URL.includes('127.0.0.1');
-  const backendUrlMismatch = runningHostedFrontend && backendLooksLocalhost;
+  // Constants derived at module level — used as-is here.
+  const AGENT_API_URL = AGENT_API_BASE_URL;
+  const agentBackendConfigured = AGENT_BACKEND_CONFIGURED;
+  const backendUrlMismatch = BACKEND_URL_MISMATCH;
 
   const connection = useMemo(() => new Connection(endpoint), []);
 
@@ -275,7 +284,7 @@ const AppContent = () => {
       console.warn('Primary market feed failed, trying Jupiter fallback', error);
 
       try {
-        const response = await fetch('https://price.jup.ag/v6/price?ids=SOL,RAY,ORCA');
+        const response = await fetch('https://lite-api.jup.ag/price/v2?ids=SOL,RAY,ORCA');
         if (!response.ok) {
           throw new Error(`Jupiter HTTP ${response.status}`);
         }
@@ -283,15 +292,15 @@ const AppContent = () => {
         const data = await response.json();
         const normalized: Record<string, MarketEntry> = {
           solana: {
-            usd: Number((data as any)?.data?.SOL?.price),
+            usd: Number((data as any)?.data?.SOL?.price ?? (data as any)?.data?.SOL?.usdPrice ?? 0),
             usd_24hr_change: 0,
           },
           raydium: {
-            usd: Number((data as any)?.data?.RAY?.price),
+            usd: Number((data as any)?.data?.RAY?.price ?? (data as any)?.data?.RAY?.usdPrice ?? 0),
             usd_24hr_change: 0,
           },
           orca: {
-            usd: Number((data as any)?.data?.ORCA?.price),
+            usd: Number((data as any)?.data?.ORCA?.price ?? (data as any)?.data?.ORCA?.usdPrice ?? 0),
             usd_24hr_change: 0,
           },
         };
@@ -316,15 +325,51 @@ const AppContent = () => {
         setMarketSource('Jupiter fallback (no 24h change)');
         setMarketError('CoinGecko unavailable; fallback feed active');
         return normalized;
-      } catch (fallbackError) {
-        console.error('All market feeds failed', fallbackError);
-        setMarket({});
-        setMarketAnalytics(null);
-        setMarketHistory([]);
-        setMarketSource('unavailable');
-        setMarketError(String((fallbackError as any)?.message || 'Failed to load market feeds'));
-        return {};
-      }
+        } catch (jupiterError) {
+          console.warn('Jupiter fallback failed, trying DexScreener', jupiterError);
+          try {
+            const dexRes = await fetch('https://api.dexscreener.com/latest/dex/search/?q=SOL%20RAY%20ORCA');
+            if (!dexRes.ok) throw new Error(`DexScreener HTTP ${dexRes.status}`);
+            const dexData = await dexRes.json();
+            const pairs: any[] = Array.isArray(dexData?.pairs) ? dexData.pairs : [];
+            const findPairPrice = (sym: string) => {
+              const pair = pairs.find((p: any) => String(p?.baseToken?.symbol || '').toUpperCase() === sym);
+              return Number(pair?.priceUsd ?? 0);
+            };
+            const normalized: Record<string, MarketEntry> = {
+              solana: { usd: findPairPrice('SOL'), usd_24hr_change: 0 },
+              raydium: { usd: findPairPrice('RAY'), usd_24hr_change: 0 },
+              orca: { usd: findPairPrice('ORCA'), usd_24hr_change: 0 },
+            };
+            const hasValidUsd = Object.values(normalized).some(
+              (e) => Number.isFinite(e.usd) && e.usd > 0,
+            );
+            if (!hasValidUsd) throw new Error('DexScreener returned no valid prices');
+            setMarket(normalized);
+            const snapshot: MarketSnapshot = {
+              ts: Date.now(),
+              sol: normalized.solana.usd,
+              ray: normalized.raydium.usd,
+              orca: normalized.orca.usd,
+            };
+            setMarketHistory((prev) => {
+              const next = [...prev, snapshot].slice(-120);
+              computeAnalytics(normalized, next);
+              return next;
+            });
+            setMarketSource('DexScreener fallback (no 24h change)');
+            setMarketError('CoinGecko and Jupiter unavailable; DexScreener fallback active');
+            return normalized;
+          } catch (fallbackError) {
+            console.error('All market feeds failed', fallbackError);
+            setMarket({});
+            setMarketAnalytics(null);
+            setMarketHistory([]);
+            setMarketSource('unavailable');
+            setMarketError(String((fallbackError as any)?.message || 'Failed to load market feeds'));
+            return {};
+          }
+        }
     }
   }, [computeAnalytics]);
 
@@ -686,7 +731,7 @@ const AppContent = () => {
       if (isRunning && typeof result.intervalMinutes === 'number' && result.intervalMinutes > 0) {
         setAgentIntervalMinutes(result.intervalMinutes);
       }
-      if (typeof result.strategy === 'string' && ['auto', 'llm', 'rule'].includes(result.strategy)) {
+      if (isRunning && typeof result.strategy === 'string' && ['auto', 'llm', 'rule'].includes(result.strategy)) {
         setAgentStrategy(result.strategy as 'auto' | 'llm' | 'rule');
       }
       setAgentStatus(result.message || 'Agent status updated.');
@@ -873,6 +918,11 @@ const AppContent = () => {
           <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>
             Window: {marketHistory.length} snapshots
           </p>
+          {marketHistory.length < 3 && (
+            <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.85em' }}>
+              Collecting more data for stable analytics...
+            </p>
+          )}
           {marketAnalytics ? (
             <>
               <div className="metric">

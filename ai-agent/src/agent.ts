@@ -2,7 +2,7 @@ import axios from 'axios';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
 import * as anchor from '@project-serum/anchor';
-import { Connection, PublicKey, clusterApiUrl } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 
 dotenv.config();
 
@@ -83,6 +83,7 @@ const idl = {
 const program = new anchor.Program(idl as anchor.Idl, PROGRAM_ID, new anchor.AnchorProvider(connection, new anchor.Wallet(keypair), { preflightCommitment: 'processed' }));
 
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
+const MARKET_CACHE_TTL_MS = 30_000;
 
 const ensureAgentHasFunds = async () => {
   const balance = await connection.getBalance(keypair.publicKey);
@@ -170,6 +171,10 @@ const getMarketData = async () => {
   const hasAnyPrice = (market: any) => [market?.solana?.usd, market?.raydium?.usd, market?.orca?.usd]
     .some((value) => Number.isFinite(value) && Number(value) > 0);
 
+  if (hasAnyPrice(cachedMarketSnapshot) && (Date.now() - cachedMarketSnapshotAt) < MARKET_CACHE_TTL_MS) {
+    return cachedMarketSnapshot;
+  }
+
   try {
     const response = await axios.get(
       'https://api.coingecko.com/api/v3/simple/price?ids=solana,raydium,orca&vs_currencies=usd&include_24hr_change=true',
@@ -181,6 +186,7 @@ const getMarketData = async () => {
     }
     marketDataError = null;
     cachedMarketSnapshot = parsed;
+    cachedMarketSnapshotAt = Date.now();
     return parsed;
   } catch (error) {
     try {
@@ -191,6 +197,7 @@ const getMarketData = async () => {
       }
       marketDataError = 'Primary market feed unavailable (CoinGecko). Using Jupiter fallback.';
       cachedMarketSnapshot = parsed;
+      cachedMarketSnapshotAt = Date.now();
       return parsed;
     } catch (fallbackError) {
       try {
@@ -204,6 +211,7 @@ const getMarketData = async () => {
         }
         marketDataError = 'Primary and Jupiter feeds unavailable. Using DexScreener fallback.';
         cachedMarketSnapshot = parsed;
+        cachedMarketSnapshotAt = Date.now();
         return parsed;
       } catch (secondFallbackError) {
         marketDataError = formatProviderError('MarketData', secondFallbackError);
@@ -375,8 +383,16 @@ const askLlm = async (prompt: string) => {
 };
 
 const buildPrompt = (market: any, heliusSignals: any, birdeyeMarket: any) => {
-  return `Market summary: ${JSON.stringify(market)}\nOn-chain signals: ${JSON.stringify(
-    heliusSignals,
+  const signalSummary = Array.isArray(heliusSignals)
+    ? heliusSignals.slice(0, 3).map((tx: any) => ({
+        type: tx?.type,
+        fee: tx?.fee,
+        source: tx?.source,
+        nativeTransfers: tx?.nativeTransfers?.length ?? 0,
+      }))
+    : heliusSignals;
+  return `Market summary: ${JSON.stringify(market)}\nOn-chain signals (last 3 txs): ${JSON.stringify(
+    signalSummary,
   )}\nBirdEye market data: ${JSON.stringify(birdeyeMarket)}\nChoose one action: buy, sell, or hold. If buy or sell, select a Solana SPL token from RAY, ORCA, or SOL and return a JSON object with keys action, symbol, amount, riskScore, and reason.`;
 };
 
@@ -427,6 +443,7 @@ let cachedMarketSnapshot: any = {
   raydium: { usd: 0, usd_24hr_change: 0 },
   orca: { usd: 0, usd_24hr_change: 0 },
 };
+let cachedMarketSnapshotAt = 0;
 
 const pushTradeRecord = (record: TradeRecord) => {
   tradeHistory.unshift(record);
@@ -610,18 +627,17 @@ export const runAgentOnce = async () => {
   lastAction = message;
   lastMessage = `Market snapshot available, AI decision prepared.`;
 
-  pushTradeRecord({
-    ts: new Date().toISOString(),
-    action,
-    symbol,
-    amount: amountValue,
-    riskScore: newRiskScore,
-    source: chosen.source,
-    reason,
-    status: action === 'hold' ? 'skipped' : 'planned',
-  });
-
   if (action === 'hold') {
+    pushTradeRecord({
+      ts: new Date().toISOString(),
+      action,
+      symbol,
+      amount: amountValue,
+      riskScore: newRiskScore,
+      source: chosen.source,
+      reason,
+      status: 'skipped',
+    });
     return { action, message };
   }
 
@@ -655,6 +671,7 @@ export const runAgentOnce = async () => {
   } catch (error) {
     const errorMessage = (error as any)?.message || 'Transaction failed';
     lastMessage = `Failed to execute trade: ${errorMessage}`;
+    lastError = errorMessage;
     console.error('Trade execution failed:', errorMessage);
     pushTradeRecord({
       ts: new Date().toISOString(),
