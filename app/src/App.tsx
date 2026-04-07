@@ -61,20 +61,18 @@ interface AgentHealth {
   env?: {
     openrouterConfigured?: boolean;
     openrouterModel?: string;
+    demoMode?: boolean;
     heliusConfigured?: boolean;
-    birdeyeConfigured?: boolean;
     walletConfigured?: boolean;
   };
   checks?: {
     openrouter?: string;
     helius?: string;
-    birdeye?: string;
     marketData?: string;
   };
   errors?: {
     openrouter?: string | null;
     helius?: string | null;
-    birdeye?: string | null;
     marketData?: string | null;
   };
   lastError?: string | null;
@@ -201,7 +199,6 @@ const AppContent = () => {
   const [agentHealth, setAgentHealth] = useState<AgentHealth | null>(null);
   const [agentTrades, setAgentTrades] = useState<AgentTrade[]>([]);
   const [agentPortfolio, setAgentPortfolio] = useState<AgentPortfolio | null>(null);
-  const [agentStrategy, setAgentStrategy] = useState<'auto' | 'llm' | 'rule'>('auto');
   const [marketAnalytics, setMarketAnalytics] = useState<TraderAnalytics | null>(null);
   const [marketSource, setMarketSource] = useState('loading');
   const [marketError, setMarketError] = useState('');
@@ -839,9 +836,6 @@ const AppContent = () => {
       if (isRunning && typeof result.intervalMinutes === 'number' && result.intervalMinutes > 0) {
         setAgentIntervalMinutes(result.intervalMinutes);
       }
-      if (isRunning && typeof result.strategy === 'string' && ['auto', 'llm', 'rule'].includes(result.strategy)) {
-        setAgentStrategy(result.strategy as 'auto' | 'llm' | 'rule');
-      }
       setAgentStatus(result.message || 'Agent status updated.');
       setAgentReady(true);
       if (result.agentPublicKey) {
@@ -924,15 +918,11 @@ const AppContent = () => {
     const result = await callAgentApi('/api/agent/start', 'POST', {
       intervalMinutes: agentIntervalMinutes,
       vaultOwner: anchorWallet.publicKey.toBase58(),
-      strategy: agentStrategy,
     });
     if (result) {
       setAgentRunning(Boolean(result.running));
       if (typeof result.intervalMinutes === 'number' && result.intervalMinutes > 0) {
         setAgentIntervalMinutes(result.intervalMinutes);
-      }
-      if (typeof result.strategy === 'string' && ['auto', 'llm', 'rule'].includes(result.strategy)) {
-        setAgentStrategy(result.strategy as 'auto' | 'llm' | 'rule');
       }
       setAgentStatus(result.message);
       setAgentReady(true);
@@ -944,7 +934,7 @@ const AppContent = () => {
       }
       await refreshAgentTrades();
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, agentStrategy, refreshAgentTrades]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');
@@ -1318,31 +1308,45 @@ const AppContent = () => {
           >
             {agentRunning ? 'Stop Agent' : 'Start Agent'}
           </button>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            Interval:
-            <select
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ color: '#cbd5e1', fontSize: '0.95em' }}>Interval:</span>
+            {[1, 3, 5, 10].map((minutes) => (
+              <button
+                key={minutes}
+                onClick={() => setAgentIntervalMinutes(minutes)}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 999,
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  background: agentIntervalMinutes === minutes ? 'linear-gradient(90deg, #06b6d4, #22c55e)' : 'rgba(255,255,255,0.06)',
+                  color: '#fff',
+                  cursor: 'pointer',
+                }}
+              >
+                {minutes}m
+              </button>
+            ))}
+            <input
+              type="number"
+              min={1}
+              max={60}
               value={agentIntervalMinutes}
-              onChange={(event) => setAgentIntervalMinutes(Number(event.target.value))}
-              style={{ padding: '10px', borderRadius: 12, background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.12)' }}
-            >
-              <option value={1}>1 minute</option>
-              <option value={3}>3 minutes</option>
-              <option value={5}>5 minutes</option>
-              <option value={10}>10 minutes</option>
-            </select>
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            Strategy:
-            <select
-              value={agentStrategy}
-              onChange={(event) => setAgentStrategy(event.target.value as 'auto' | 'llm' | 'rule')}
-              style={{ padding: '10px', borderRadius: 12, background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.12)' }}
-            >
-              <option value="auto">Auto (LLM + Rule fallback)</option>
-              <option value="rule">Rule only</option>
-              <option value="llm">LLM only</option>
-            </select>
-          </label>
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value) && value >= 1 && value <= 60) {
+                  setAgentIntervalMinutes(Math.round(value));
+                }
+              }}
+              style={{
+                width: 74,
+                padding: '8px 10px',
+                borderRadius: 10,
+                background: 'rgba(255,255,255,0.08)',
+                color: '#fff',
+                border: '1px solid rgba(255,255,255,0.14)',
+              }}
+            />
+          </div>
         </div>
         <p>{recommendation}</p>
         <p>Agent status is controlled from this page and runs on your backend service.</p>
@@ -1363,12 +1367,11 @@ const AppContent = () => {
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
           {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
           {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
+          {'\n'}Demo mode: {agentHealth?.env?.demoMode ? 'on' : 'off'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
-          {'\n'}BirdEye: {agentHealth?.checks?.birdeye || 'unknown'}
           {'\n'}MarketData: {agentHealth?.checks?.marketData || 'unknown'}
           {'\n'}Agent SOL: {typeof agentHealth?.agentBalanceSol === 'number' ? agentHealth.agentBalanceSol.toFixed(4) : 'unknown'}
         </pre>
-        <h3 style={{ marginTop: 18 }}>Recent Agent Trades</h3>
         {/* ── Portfolio ─────────────────────────────────────────────────────── */}
         <h3 style={{ marginTop: 18 }}>Portfolio</h3>
         {agentPortfolio && Object.keys(agentPortfolio.positions).length > 0 ? (
@@ -1429,16 +1432,11 @@ const AppContent = () => {
             ))}
           </div>
         )}
-        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.birdeye || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
+        {(agentHealth?.errors?.openrouter || agentHealth?.errors?.helius || agentHealth?.errors?.marketData || agentHealth?.lastError) && (
           <div style={{ marginTop: 10, color: '#f59e0b' }}>
             <div>API diagnostics:</div>
             {agentHealth?.errors?.openrouter && <div>OpenRouter error: {agentHealth.errors.openrouter}</div>}
             {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
-            {agentHealth?.errors?.birdeye && (
-              <div>
-                {agentHealth.errors.birdeye.includes('HTTP 521') ? 'BirdEye warning' : 'BirdEye error'}: {agentHealth.errors.birdeye}
-              </div>
-            )}
             {agentHealth?.errors?.marketData && <div>MarketData error: {agentHealth.errors.marketData}</div>}
             {agentHealth?.lastError && <div>Last agent run error: {agentHealth.lastError}</div>}
           </div>

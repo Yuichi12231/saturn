@@ -16,6 +16,7 @@ const ENDPOINT = (
 ).trim();
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
+const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 
 // Jupiter v6 API (mainnet; gracefully skipped with paper-trade fallback on devnet)
 const JUPITER_API = 'https://quote-api.jup.ag/v6';
@@ -28,7 +29,6 @@ const JUPITER_MINTS: Record<string, string> = {
 // SOL committed per 1 amount-unit (agent amount: 1-10 → 0.01-0.10 SOL)
 const TRADE_SOL_PER_UNIT = 0.01;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const SECRET_KEY = process.env.AGENT_WALLET_SECRET_KEY;
 
 if (!SECRET_KEY) {
@@ -240,10 +240,6 @@ const formatProviderError = (provider: string, error: unknown): string => {
   const status = axiosError?.response?.status;
   const data = axiosError?.response?.data;
 
-  if (provider === 'BirdEye' && status === 521) {
-    return 'BirdEye service unavailable (HTTP 521). The provider host is temporarily down.';
-  }
-
   let message = '';
   if (typeof data?.error?.message === 'string') {
     message = data.error.message;
@@ -270,6 +266,29 @@ const formatProviderError = (provider: string, error: unknown): string => {
   return status ? `${provider} HTTP ${status}: ${short}` : `${provider}: ${short}`;
 };
 
+const formatOpenRouterError = (error: unknown): string => {
+  const e = error as any;
+  const status = e?.statusCode || e?.status || e?.response?.status;
+  const code = e?.body?.error?.code || e?.code || e?.response?.data?.error?.code;
+  const message =
+    e?.body?.error?.message
+    || e?.response?.data?.error?.message
+    || e?.response?.data?.message
+    || e?.message
+    || 'OpenRouter request failed';
+
+  const details = [
+    status ? `HTTP ${status}` : null,
+    code ? `code=${code}` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  return details
+    ? `OpenRouter ${details}: ${String(message)}`
+    : `OpenRouter: ${String(message)}`;
+};
+
 const getHeliusSignals = async () => {
   if (!HELIUS_API_KEY) {
     heliusError = 'HELIUS_API_KEY is not configured';
@@ -291,29 +310,6 @@ const getHeliusSignals = async () => {
     const axiosError = error as any;
     heliusError = formatProviderError('Helius', error);
     console.warn('Helius API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
-    return null;
-  }
-};
-
-const getBirdEyeMarket = async () => {
-  if (!BIRDEYE_API_KEY) {
-    birdeyeError = 'BIRDEYE_API_KEY is not configured';
-    return null;
-  }
-
-  try {
-    const response = await axios.get('https://api.birdeye.so/v1/market/overview', {
-      headers: {
-        Authorization: `Bearer ${BIRDEYE_API_KEY}`,
-      },
-      timeout: 15000,
-    });
-    birdeyeError = null;
-    return response.data;
-  } catch (error) {
-    const axiosError = error as any;
-    birdeyeError = formatProviderError('BirdEye', error);
-    console.warn('BirdEye API request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
     return null;
   }
 };
@@ -409,14 +405,14 @@ const askLlm = async (prompt: string) => {
     openrouterError = null;
     return parseJsonFromModelText(text);
   } catch (error) {
-    const axiosError = error as any;
-    openrouterError = formatProviderError('OpenRouter', error);
-    console.warn('OpenRouter request failed:', axiosError?.status, axiosError?.message);
+    const e = error as any;
+    openrouterError = formatOpenRouterError(error);
+    console.warn('OpenRouter request failed:', e?.statusCode || e?.status, e?.body || e?.response?.data || e?.message);
     return null;
   }
 };
 
-const buildPrompt = (market: any, heliusSignals: any, birdeyeMarket: any) => {
+const buildPrompt = (market: any, heliusSignals: any) => {
   const signalSummary = Array.isArray(heliusSignals)
     ? heliusSignals.slice(0, 3).map((tx: any) => ({
         type: tx?.type,
@@ -434,7 +430,6 @@ const buildPrompt = (market: any, heliusSignals: any, birdeyeMarket: any) => {
   return [
     `Market summary: ${JSON.stringify(market)}`,
     `On-chain signals (last 3 txs): ${JSON.stringify(signalSummary)}`,
-    `BirdEye market data: ${JSON.stringify(birdeyeMarket)}`,
     `Current portfolio: ${portfolioLines}`,
     `Realized P&L: ${pnlStr}`,
     'Rules: only sell if you currently hold that token; prefer diversification; do not double-buy the same token unless entry was significantly lower.',
@@ -448,8 +443,6 @@ const symbolToMint: Record<string, string> = {
   ORCA: 'orca7wuirT1o1sPo2Ng76gGgneJzmoGWaa6D4wvkPsi',
   SOL: 'So11111111111111111111111111111111111111112',
 };
-
-type TradingStrategy = 'auto' | 'llm' | 'rule';
 
 interface Decision {
   action: 'buy' | 'sell' | 'hold';
@@ -493,6 +486,37 @@ const SYMBOL_MARKET_KEY: Record<string, string> = {
 
 const getTokenPriceUsd = (symbol: string, market: any): number =>
   Number(market?.[SYMBOL_MARKET_KEY[symbol]]?.usd || 0) || 1;
+
+const getDemoDecision = (market: any): Decision => {
+  const openPositions = Object.keys(agentPortfolio) as Array<'SOL' | 'RAY' | 'ORCA'>;
+  if (openPositions.length > 0) {
+    const sym = openPositions[0];
+    const pos = agentPortfolio[sym];
+    return {
+      action: 'sell',
+      symbol: sym,
+      amount: Math.max(1, Math.round(pos?.amountUnits || 1)),
+      riskScore: 45,
+      reason: 'Demo mode: closing an existing position to demonstrate sell flow.',
+      source: 'rule',
+    };
+  }
+
+  const entries = [
+    { symbol: 'SOL' as const, change: Number(market?.solana?.usd_24hr_change ?? 0) },
+    { symbol: 'RAY' as const, change: Number(market?.raydium?.usd_24hr_change ?? 0) },
+    { symbol: 'ORCA' as const, change: Number(market?.orca?.usd_24hr_change ?? 0) },
+  ].sort((a, b) => b.change - a.change);
+
+  return {
+    action: 'buy',
+    symbol: entries[0]?.symbol || 'SOL',
+    amount: 2,
+    riskScore: 40,
+    reason: 'Demo mode: opening a position to demonstrate buy flow.',
+    source: 'rule',
+  };
+};
 // ──────────────────────────────────────────────────────────────────────────────
 
 let scheduledAgent: ReturnType<typeof setInterval> | null = null;
@@ -504,9 +528,7 @@ let currentVaultOwner: PublicKey | null = null;
 let lastError: string | null = null;
 let openrouterError: string | null = null;
 let heliusError: string | null = null;
-let birdeyeError: string | null = null;
 let marketDataError: string | null = null;
-let strategy: TradingStrategy = 'auto';
 const tradeHistory: TradeRecord[] = [];
 let cachedMarketSnapshot: any = {
   solana: { usd: 0, usd_24hr_change: 0 },
@@ -578,8 +600,8 @@ const decideWithRules = (market: any): Decision => {
   };
 };
 
-const decideWithLlm = async (market: any, heliusSignals: any, birdeyeMarket: any): Promise<Decision | null> => {
-  const prompt = buildPrompt(market, heliusSignals, birdeyeMarket);
+const decideWithLlm = async (market: any, heliusSignals: any): Promise<Decision | null> => {
+  const prompt = buildPrompt(market, heliusSignals);
   const decision = await askLlm(prompt);
   if (!decision || typeof decision !== 'object') {
     return null;
@@ -614,7 +636,6 @@ const decideWithLlm = async (market: any, heliusSignals: any, birdeyeMarket: any
 export const getAgentState = () => ({
   running,
   intervalMinutes: currentIntervalMinutes,
-  strategy,
   lastAction,
   message: lastMessage,
   lastError,
@@ -634,13 +655,6 @@ export const getAgentHealth = async () => {
 
   const openrouterStatus = !OPENROUTER_API_KEY ? 'not_configured' : openrouterError ? 'error' : 'configured';
   const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
-  const birdeyeStatus = !BIRDEYE_API_KEY
-    ? 'not_configured'
-    : birdeyeError?.includes('HTTP 521')
-      ? 'degraded'
-      : birdeyeError
-        ? 'error'
-        : 'configured';
 
   return {
     ok: true,
@@ -651,20 +665,18 @@ export const getAgentHealth = async () => {
     env: {
       openrouterConfigured: Boolean(OPENROUTER_API_KEY),
       openrouterModel: OPENROUTER_MODEL,
+      demoMode: AGENT_DEMO_MODE,
       heliusConfigured: Boolean(HELIUS_API_KEY),
-      birdeyeConfigured: Boolean(BIRDEYE_API_KEY),
       walletConfigured: Boolean(SECRET_KEY),
     },
     checks: {
       openrouter: openrouterStatus,
       helius: heliusStatus,
-      birdeye: birdeyeStatus,
       marketData: marketDataError ? 'fallback_or_error' : 'configured',
     },
     errors: {
       openrouter: openrouterError,
       helius: heliusError,
-      birdeye: birdeyeError,
       marketData: marketDataError,
     },
     lastError,
@@ -682,14 +694,13 @@ export const runAgentOnce = async () => {
 
   const market = await getMarketData();
   const heliusSignals = await getHeliusSignals();
-  const birdeyeMarket = await getBirdEyeMarket();
 
-  let chosen: Decision | null = null;
-  if (strategy === 'llm' || strategy === 'auto') {
-    chosen = await decideWithLlm(market, heliusSignals, birdeyeMarket);
-  }
-  if (!chosen || strategy === 'rule') {
+  let chosen: Decision | null = await decideWithLlm(market, heliusSignals);
+  if (!chosen) {
     chosen = decideWithRules(market);
+  }
+  if (AGENT_DEMO_MODE) {
+    chosen = getDemoDecision(market);
   }
 
   const action = chosen.action;
@@ -863,7 +874,7 @@ export const runAgentOnce = async () => {
   }
 };
 
-export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: string, requestedStrategy: TradingStrategy = 'auto') => {
+export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: string) => {
   if (scheduledAgent) {
     clearInterval(scheduledAgent);
   }
@@ -876,10 +887,9 @@ export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: st
   }
 
   currentVaultOwner = owner;
-  strategy = requestedStrategy;
   currentIntervalMinutes = intervalMinutes;
   running = true;
-  lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()} (strategy: ${strategy}).`;
+  lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()}.`;
   try {
     await runAgentOnce();
   } catch (error) {
