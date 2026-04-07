@@ -115,6 +115,17 @@ interface MarketSnapshot {
   orca: number;
 }
 
+interface TokenVisual {
+  key: 'solana' | 'raydium' | 'orca';
+  label: string;
+  price: number;
+  change24h: number;
+  shortMovePct: number;
+  rangePosPct: number;
+  volPct: number;
+  series: number[];
+}
+
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
 
 const extractErrorMessage = (error: unknown): string => {
@@ -124,6 +135,32 @@ const extractErrorMessage = (error: unknown): string => {
   if (typeof err?.message === 'string') return err.message;
   if (Array.isArray(err?.logs) && err.logs.length > 0) return err.logs.join(' | ');
   return 'Unknown transaction error';
+};
+
+const clampPercent = (value: number): number => Math.max(0, Math.min(100, value));
+
+const calcVolPct = (series: number[]): number => {
+  if (series.length < 3) return 0;
+  const returns = series.slice(1).map((v, i) => (v - series[i]) / series[i]).filter((v) => Number.isFinite(v));
+  if (returns.length < 2) return 0;
+  const mean = returns.reduce((s, v) => s + v, 0) / returns.length;
+  const variance = returns.reduce((s, v) => s + (v - mean) ** 2, 0) / returns.length;
+  return Math.sqrt(Math.max(variance, 0)) * 100;
+};
+
+const buildSparklinePath = (series: number[], width = 160, height = 46): string => {
+  if (series.length === 0) return '';
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const span = max - min || 1;
+  const stepX = series.length > 1 ? width / (series.length - 1) : 0;
+  return series
+    .map((value, i) => {
+      const x = i * stepX;
+      const y = height - ((value - min) / span) * height;
+      return `${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(' ');
 };
 
 const AppContent = () => {
@@ -177,6 +214,62 @@ const AppContent = () => {
     if (!vault || !anchorWallet) return false;
     return vault.owner.toBase58() === anchorWallet.publicKey!.toBase58();
   }, [vault, anchorWallet]);
+
+  const tokenVisuals = useMemo<TokenVisual[]>(() => {
+    const seriesByKey: Record<'solana' | 'raydium' | 'orca', number[]> = {
+      solana: marketHistory.map((p) => p.sol).filter((v) => Number.isFinite(v) && v > 0),
+      raydium: marketHistory.map((p) => p.ray).filter((v) => Number.isFinite(v) && v > 0),
+      orca: marketHistory.map((p) => p.orca).filter((v) => Number.isFinite(v) && v > 0),
+    };
+
+    const labels: Record<'solana' | 'raydium' | 'orca', string> = {
+      solana: 'SOL',
+      raydium: 'RAY',
+      orca: 'ORCA',
+    };
+
+    const keys: Array<'solana' | 'raydium' | 'orca'> = ['solana', 'raydium', 'orca'];
+    return keys.map((key) => {
+      const series = seriesByKey[key];
+      const price = Number((market as any)?.[key]?.usd ?? 0);
+      const change24h = Number((market as any)?.[key]?.usd_24hr_change ?? 0);
+
+      const shortWindow = series.slice(-4);
+      const shortMovePct = shortWindow.length >= 2
+        ? ((shortWindow[shortWindow.length - 1] - shortWindow[0]) / shortWindow[0]) * 100
+        : 0;
+
+      const min = series.length > 0 ? Math.min(...series) : 0;
+      const max = series.length > 0 ? Math.max(...series) : 0;
+      const rangePosPct = max > min ? ((price - min) / (max - min)) * 100 : 50;
+      const volPct = calcVolPct(series);
+
+      return {
+        key,
+        label: labels[key],
+        price,
+        change24h,
+        shortMovePct,
+        rangePosPct: clampPercent(rangePosPct),
+        volPct,
+        series,
+      };
+    });
+  }, [market, marketHistory]);
+
+  const marketIndicators = useMemo(() => {
+    if (tokenVisuals.length === 0) {
+      return { pressure: 0, dispersion: 0, heat: 0 };
+    }
+    const deltas = tokenVisuals.map((t) => t.change24h);
+    const up = deltas.filter((v) => v > 0).length;
+    const down = deltas.filter((v) => v < 0).length;
+    const pressure = clampPercent(50 + (up - down) * 16);
+    const mean = deltas.reduce((s, v) => s + v, 0) / deltas.length;
+    const dispersion = Math.sqrt(deltas.reduce((s, v) => s + (v - mean) ** 2, 0) / deltas.length);
+    const heat = clampPercent(50 + mean * 5 - dispersion * 2);
+    return { pressure, dispersion, heat };
+  }, [tokenVisuals]);
 
   const computeAnalytics = useCallback((normalized: Record<string, MarketEntry>, history: MarketSnapshot[]) => {
     const changes = Object.values(normalized).map((entry) => Number(entry.usd_24hr_change ?? 0));
@@ -896,20 +989,38 @@ const AppContent = () => {
         <section className="card">
           <h2>Market Overview</h2>
           <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>Feed source: {marketSource}</p>
-          {Object.keys(market).length === 0 ? (
+          {tokenVisuals.length === 0 ? (
             <p>Loading market indicators…</p>
           ) : (
-            Object.entries(market).map(([symbol, data]) => (
-              <div key={symbol} className="metric">
-                <div>{symbol.toUpperCase()}</div>
-                <div style={{ textAlign: 'right' }}>
-                  <div>${(data as any).usd.toFixed(2)}</div>
-                  <div style={{ fontSize: '0.85em', color: (data as any).usd_24hr_change >= 0 ? '#22c55e' : '#ef4444' }}>
-                    {(data as any).usd_24hr_change?.toFixed?.(2) ?? '0.00'}%
+            <div style={{ display: 'grid', gap: 10 }}>
+              {tokenVisuals.map((token) => (
+                <div key={token.key} className="token-chip">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <strong>{token.label}</strong>
+                    <div style={{ textAlign: 'right' }}>
+                      <div>${token.price.toFixed(3)}</div>
+                      <div style={{ fontSize: '0.85em', color: token.change24h >= 0 ? '#22c55e' : '#ef4444' }}>
+                        {token.change24h.toFixed(2)}%
+                      </div>
+                    </div>
+                  </div>
+                  <svg viewBox="0 0 160 46" width="100%" height="46" role="img" aria-label={`${token.label} sparkline`}>
+                    <path
+                      d={buildSparklinePath(token.series.slice(-24), 160, 46)}
+                      fill="none"
+                      stroke={token.change24h >= 0 ? '#5ee0ff' : '#ff5c7a'}
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginTop: 6, fontSize: '0.84em', color: '#9ca3af' }}>
+                    <span>Short: {token.shortMovePct.toFixed(2)}%</span>
+                    <span>Range: {token.rangePosPct.toFixed(0)}%</span>
+                    <span>Vol: {token.volPct.toFixed(2)}%</span>
                   </div>
                 </div>
-              </div>
-            ))
+              ))}
+            </div>
           )}
         </section>
 
@@ -976,6 +1087,30 @@ const AppContent = () => {
                 }}>
                   {marketAnalytics.riskRegime}
                 </strong>
+              </div>
+              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84em', color: '#9ca3af' }}>
+                    <span>Market pressure</span>
+                    <span>{marketIndicators.pressure.toFixed(0)}%</span>
+                  </div>
+                  <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                    <div style={{ width: `${marketIndicators.pressure}%`, height: '100%', background: 'linear-gradient(90deg,#ff4fd8,#5ee0ff)' }} />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84em', color: '#9ca3af' }}>
+                    <span>Market heat</span>
+                    <span>{marketIndicators.heat.toFixed(0)}%</span>
+                  </div>
+                  <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                    <div style={{ width: `${marketIndicators.heat}%`, height: '100%', background: 'linear-gradient(90deg,#5ee0ff,#b6ff4e)' }} />
+                  </div>
+                </div>
+                <div className="metric" style={{ paddingTop: 8 }}>
+                  <span>Return dispersion</span>
+                  <strong>{marketIndicators.dispersion.toFixed(2)}</strong>
+                </div>
               </div>
             </>
           ) : (
