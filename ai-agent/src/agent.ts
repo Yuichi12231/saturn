@@ -438,24 +438,39 @@ const executeJupiterSwap = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 const parseJsonFromModelText = (text: string): any => {
-  const trimmed = text.trim();
-  const withoutFence = trimmed
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```$/i, '')
+  // Strip <think>...</think> reasoning blocks (Nemotron, DeepSeek, etc.)
+  const withoutThink = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  // Strip markdown code fences
+  const withoutFence = withoutThink
+    .replace(/^```json\s*/im, '')
+    .replace(/^```\s*/im, '')
+    .replace(/```\s*$/im, '')
     .trim();
 
+  // 1) Try full text as JSON
   try {
     return JSON.parse(withoutFence);
-  } catch {
-    const first = withoutFence.indexOf('{');
-    const last = withoutFence.lastIndexOf('}');
-    if (first >= 0 && last > first) {
-      const candidate = withoutFence.slice(first, last + 1);
-      return JSON.parse(candidate);
+  } catch { /* continue */ }
+
+  // 2) Find the LAST complete JSON object (model may prepend reasoning text)
+  const lastBrace = withoutFence.lastIndexOf('}');
+  if (lastBrace >= 0) {
+    // Walk backward to find matching opening brace
+    let depth = 0;
+    for (let i = lastBrace; i >= 0; i--) {
+      if (withoutFence[i] === '}') depth++;
+      if (withoutFence[i] === '{') depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(withoutFence.slice(i, lastBrace + 1));
+        } catch { /* continue */ }
+      }
     }
-    throw new Error('Model output is not valid JSON.');
   }
+
+  console.warn('[LLM] Model output (first 300 chars):', withoutFence.slice(0, 300));
+  throw new Error('Model output is not valid JSON.');
 };
 
 const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
@@ -473,9 +488,15 @@ const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
     const stream = await client.chat.send({
       chatRequest: {
         model: VALIDATED_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        maxTokens: 400,
-        temperature: 0.3,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a Solana trading agent. You MUST respond with ONLY a valid JSON object — no explanation, no markdown, no reasoning text. Output strictly: {"action":"buy"|"sell"|"hold","symbol":"SOL"|"RAY"|"ORCA","amount":1-10,"riskScore":1-99,"reason":"..."}',
+          },
+          { role: 'user', content: prompt },
+        ],
+        maxTokens: 250,
+        temperature: 0.1,
         stream: true,
       },
     });
@@ -534,13 +555,12 @@ const buildPrompt = (market: any, heliusSignals: any) => {
   const pnlStr = `${realizedPnlSol >= 0 ? '+' : ''}${realizedPnlSol.toFixed(6)} SOL`;
 
   return [
-    `Market summary: ${JSON.stringify(market)}`,
-    `On-chain signals (last 3 txs): ${JSON.stringify(signalSummary)}`,
-    `Current portfolio: ${portfolioLines}`,
-    `Realized P&L: ${pnlStr}`,
-    'Rules: only sell if you currently hold that token; prefer diversification; do not double-buy the same token unless entry was significantly lower.',
-    'Choose one action: buy, sell, or hold. If buy or sell, select a Solana SPL token from RAY, ORCA, or SOL.',
-    'Return a JSON object with keys: action, symbol, amount (1-10 token units), riskScore (1-99), reason.',
+    `Market: ${JSON.stringify(market)}`,
+    `Signals: ${JSON.stringify(signalSummary)}`,
+    `Portfolio: ${portfolioLines}`,
+    `P&L: ${pnlStr}`,
+    'Rules: only sell tokens you hold; diversify; no double-buy unless entry was much lower.',
+    'Respond ONLY with JSON: {"action":"buy"|"sell"|"hold","symbol":"SOL"|"RAY"|"ORCA","amount":1-10,"riskScore":1-99,"reason":"brief"}',
   ].join('\n');
 };
 
