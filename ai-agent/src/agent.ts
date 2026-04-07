@@ -328,6 +328,36 @@ const parseJsonFromModelText = (text: string): any => {
   }
 };
 
+const extractOpenRouterContent = (data: any): string => {
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content ?? choice?.text;
+
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    const joined = content
+      .map((part: any) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        if (typeof part?.text === 'string') {
+          return part.text;
+        }
+        if (typeof part?.content === 'string') {
+          return part.content;
+        }
+        return '';
+      })
+      .join('\n')
+      .trim();
+    return joined;
+  }
+
+  return '';
+};
+
 const askLlm = async (prompt: string) => {
   if (!OPENROUTER_API_KEY) {
     openrouterError = 'OPENROUTER_API_KEY is not configured';
@@ -346,7 +376,7 @@ const askLlm = async (prompt: string) => {
           },
         ],
         temperature: 0.3,
-        max_tokens: 220,
+        max_tokens: 400,
         reasoning: {
           enabled: true,
         },
@@ -360,9 +390,21 @@ const askLlm = async (prompt: string) => {
       },
     );
 
-    const text = response.data?.choices?.[0]?.message?.content;
+    const text = extractOpenRouterContent(response.data);
     if (!text) {
-      throw new Error('OpenRouter did not return a response.');
+      const finishReason = response.data?.choices?.[0]?.finish_reason;
+      const hasReasoning = Boolean(response.data?.choices?.[0]?.message?.reasoning);
+      const details = [
+        finishReason ? `finish_reason=${finishReason}` : null,
+        hasReasoning ? 'reasoning_only=true' : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      throw new Error(
+        details
+          ? `OpenRouter returned empty content (${details}).`
+          : 'OpenRouter returned empty content.',
+      );
     }
 
     openrouterError = null;
@@ -553,7 +595,13 @@ export const getAgentHealth = async () => {
 
   const openrouterStatus = !OPENROUTER_API_KEY ? 'not_configured' : openrouterError ? 'error' : 'configured';
   const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
-  const birdeyeStatus = !BIRDEYE_API_KEY ? 'not_configured' : birdeyeError ? 'error' : 'configured';
+  const birdeyeStatus = !BIRDEYE_API_KEY
+    ? 'not_configured'
+    : birdeyeError?.includes('HTTP 521')
+      ? 'degraded'
+      : birdeyeError
+        ? 'error'
+        : 'configured';
 
   return {
     ok: true,

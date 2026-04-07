@@ -1384,7 +1384,11 @@ const AppContent = () => {
             <div>API diagnostics:</div>
             {agentHealth?.errors?.openrouter && <div>OpenRouter error: {agentHealth.errors.openrouter}</div>}
             {agentHealth?.errors?.helius && <div>Helius error: {agentHealth.errors.helius}</div>}
-            {agentHealth?.errors?.birdeye && <div>BirdEye error: {agentHealth.errors.birdeye}</div>}
+            {agentHealth?.errors?.birdeye && (
+              <div>
+                {agentHealth.errors.birdeye.includes('HTTP 521') ? 'BirdEye warning' : 'BirdEye error'}: {agentHealth.errors.birdeye}
+              </div>
+            )}
             {agentHealth?.errors?.marketData && <div>MarketData error: {agentHealth.errors.marketData}</div>}
             {agentHealth?.lastError && <div>Last agent run error: {agentHealth.lastError}</div>}
           </div>
