@@ -774,6 +774,7 @@ let lastAction = 'Agent has not run yet.';
 let lastMessage = 'Ready to run.';
 let running = false;
 let currentVaultOwner: PublicKey | null = null;
+let currentVaultPda: PublicKey | null = null;
 let lastError: string | null = null;
 let openrouterError: string | null = null;
 let heliusError: string | null = null;
@@ -781,6 +782,24 @@ let marketDataError: string | null = null;
 const tradeHistory: TradeRecord[] = [];
 let cachedMarketSnapshot: any = { tokens: {} };
 let cachedMarketSnapshotAt = 0;
+
+// Vault capital — SOL available for trading (fetched from vault account at start)
+let vaultCapitalSol = 0;
+
+// Compute how much SOL is currently locked in open positions
+const getCapitalUsedSol = () =>
+  Object.values(agentPortfolio).reduce((sum, pos) => sum + (pos?.solSpent ?? 0), 0);
+
+// Fetch vault SOL balance and store as available capital
+const refreshVaultCapital = async (vaultPda: PublicKey): Promise<void> => {
+  try {
+    const lamports = await connection.getBalance(vaultPda);
+    vaultCapitalSol = lamports / 1e9;
+    console.log(`[VAULT] Capital refreshed: ${vaultCapitalSol.toFixed(6)} SOL`);
+  } catch {
+    // keep previous value
+  }
+};
 
 const pushTradeRecord = (record: TradeRecord) => {
   tradeHistory.unshift(record);
@@ -885,20 +904,27 @@ const decideWithLlm = async (market: any, heliusSignals: any): Promise<Decision 
   return { action, symbol, amount, riskScore, reason, source: 'llm' };
 };
 
-export const getAgentState = () => ({
-  running,
-  intervalMinutes: currentIntervalMinutes,
-  lastAction,
-  message: lastMessage,
-  lastError,
-  agentPublicKey: keypair.publicKey.toBase58(),
-  vaultOwner: currentVaultOwner?.toBase58() || null,
-  tradeHistory: tradeHistory.slice(0, 20),
-  portfolio: {
-    positions: agentPortfolio,
-    realizedPnlSol,
-  },
-});
+export const getAgentState = () => {
+  const capitalUsedSol = getCapitalUsedSol();
+  return {
+    running,
+    intervalMinutes: currentIntervalMinutes,
+    lastAction,
+    message: lastMessage,
+    lastError,
+    agentPublicKey: keypair.publicKey.toBase58(),
+    vaultOwner: currentVaultOwner?.toBase58() || null,
+    vaultPda: currentVaultPda?.toBase58() || null,
+    tradeHistory: tradeHistory.slice(0, 20),
+    portfolio: {
+      positions: agentPortfolio,
+      realizedPnlSol,
+      vaultCapitalSol,
+      capitalUsedSol,
+      availableCapitalSol: Math.max(0, vaultCapitalSol - capitalUsedSol),
+    },
+  };
+};
 
 export const getTradeHistory = () => tradeHistory.slice(0, 50);
 export const getTradeCount = () => tradeHistory.length;
@@ -1001,7 +1027,11 @@ export const runAgentOnce = async () => {
   await ensureAgentHasFunds();
 
   const vaultPda: PublicKey = await ensureVaultExists(currentVaultOwner);
-  
+  currentVaultPda = vaultPda;
+
+  // Refresh vault capital so we always have the latest on-chain balance
+  await refreshVaultCapital(vaultPda);
+
   lastError = null;
 
   const market = await getMarketData();
@@ -1069,6 +1099,18 @@ export const runAgentOnce = async () => {
   const tradeLamports = Math.round(tradeSolAmount * 1e9);
   let swapTx: string | undefined;
   let swapMode: 'real' | 'paper' = isChainToken ? 'real' : 'paper';
+
+  // ── Capital guard: ensure vault has enough SOL for this trade ──────────────
+  if (action === 'buy') {
+    const capitalUsed = getCapitalUsedSol();
+    const available = Math.max(0, vaultCapitalSol - capitalUsed);
+    if (available < tradeSolAmount) {
+      const skipMsg = `Insufficient vault capital (${available.toFixed(4)} SOL available, need ${tradeSolAmount.toFixed(4)} SOL for ${symbol}). Skipping buy.`;
+      pushTradeRecord({ ts: new Date().toISOString(), action: 'hold', symbol, amount: 0, riskScore: newRiskScore, source: chosen.source, reason: skipMsg, status: 'skipped' });
+      lastMessage = skipMsg;
+      return { action: 'hold', message: skipMsg };
+    }
+  }
 
   if (!isChainToken) {
     // ── Paper trade: lab-only token (ATM, LQD, NOVA, BETA, GAM, ALF, DEL, OME, SIG) ──
@@ -1261,7 +1303,16 @@ export const startAgentSchedule = async (intervalMinutes: number, vaultOwner: st
   running = true;
   lastMessage = `Agent scheduled every ${intervalMinutes} minute(s) for vault owner ${owner.toBase58()}.`;
   try {
-    await runAgentOnce();
+      // Pre-fetch vault PDA and capital before first run
+      try {
+        const vaultPda = await ensureVaultExists(owner);
+        currentVaultPda = vaultPda;
+        await refreshVaultCapital(vaultPda);
+      } catch {
+        // will fail again during runAgentOnce with a proper error message
+      }
+
+      await runAgentOnce();
   } catch (error) {
     const message = (error as any)?.message || 'Initial run failed';
     lastError = message;

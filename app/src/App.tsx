@@ -122,6 +122,9 @@ interface AgentPosition {
 interface AgentPortfolio {
   positions: Partial<Record<string, AgentPosition>>;
   realizedPnlSol: number;
+  vaultCapitalSol?: number;
+  capitalUsedSol?: number;
+  availableCapitalSol?: number;
 }
 
 interface TraderAnalytics {
@@ -1767,6 +1770,66 @@ const AppContent = () => {
                     ))
                   )}
                 </div>
+
+                  {/* ── Agent Portfolio in Vault ─────────────────────────────── */}
+                  <div style={{ marginTop: 20 }}>
+                    <h3>Agent Portfolio</h3>
+
+                    {/* Capital metrics */}
+                    {agentPortfolio && typeof agentPortfolio.vaultCapitalSol === 'number' && (
+                      <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
+                        <div className="metric">
+                          <span>Vault trading capital</span>
+                          <strong>{agentPortfolio.vaultCapitalSol.toFixed(6)} SOL</strong>
+                        </div>
+                        <div className="metric">
+                          <span>Committed to trades</span>
+                          <strong style={{ color: '#f59e0b' }}>{(agentPortfolio.capitalUsedSol ?? 0).toFixed(6)} SOL</strong>
+                        </div>
+                        <div className="metric">
+                          <span>Available for trading</span>
+                          <strong style={{ color: (agentPortfolio.availableCapitalSol ?? 0) > 0 ? '#22c55e' : '#ef4444' }}>
+                            {(agentPortfolio.availableCapitalSol ?? 0).toFixed(6)} SOL
+                          </strong>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Open positions */}
+                    {agentPortfolio && Object.keys(agentPortfolio.positions).length > 0 ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {(Object.entries(agentPortfolio.positions) as [string, AgentPosition][]).map(([sym, pos]) => (
+                          <div key={sym} style={{ border: '1px solid rgba(34,197,94,0.35)', borderRadius: 10, padding: '10px 14px', background: 'rgba(34,197,94,0.06)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                              <strong style={{ color: '#22c55e', fontSize: '1.05em' }}>{sym}</strong>
+                              <span style={{ background: pos.swapMode === 'real' ? 'rgba(6,182,212,0.18)' : 'rgba(255,255,255,0.08)', color: pos.swapMode === 'real' ? '#06b6d4' : '#9ca3af', borderRadius: 6, padding: '2px 8px', fontSize: '0.8em' }}>
+                                {pos.swapMode === 'real' ? '⛓ on-chain' : '📄 paper'}
+                              </span>
+                            </div>
+                            <div style={{ color: '#cbd5e1', fontSize: '0.9em', marginTop: 6, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                              <span>{pos.amountUnits.toFixed(4)} units</span>
+                              <span style={{ color: '#f59e0b' }}>−{pos.solSpent.toFixed(4)} SOL</span>
+                              <span>entry ${pos.entryPriceUsd.toFixed(4)}</span>
+                            </div>
+                            {pos.entryTx && (
+                              <div className="long-value" style={{ color: '#60a5fa', fontSize: '0.78em', marginTop: 4 }}>
+                                Tx: {pos.entryTx}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {typeof agentPortfolio.realizedPnlSol === 'number' && agentPortfolio.realizedPnlSol !== 0 && (
+                          <div style={{ color: agentPortfolio.realizedPnlSol >= 0 ? '#22c55e' : '#ef4444', fontSize: '0.92em', paddingLeft: 2, marginTop: 4 }}>
+                            Realized P&L: {agentPortfolio.realizedPnlSol >= 0 ? '+' : ''}{agentPortfolio.realizedPnlSol.toFixed(6)} SOL
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p style={{ color: '#9ca3af' }}>
+                        {agentRunning ? 'Agent is running — waiting for first trade opportunity…' : 'Start the agent to begin trading.'}
+                      </p>
+                    )}
+                  </div>
               </>
             ) : (
               <>
