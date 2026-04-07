@@ -761,12 +761,31 @@ export const getAgentHealth = async () => {
 };
 
 export const runAgentOnce = async () => {
-  if (!currentVaultOwner) {
-    throw new Error('Vault owner is not set. Start the agent from UI with a connected wallet first.');
+  // In demo mode, vault is not required
+  if (!AGENT_DEMO_MODE) {
+    if (!currentVaultOwner) {
+      throw new Error('Vault owner is not set. Start the agent from UI with a connected wallet first.');
+    }
   }
 
   await ensureAgentHasFunds();
-  const vaultPda = await ensureVaultExists(currentVaultOwner);
+  
+  // Only validate vault if not in demo mode
+  let vaultPda: PublicKey;
+  if (!AGENT_DEMO_MODE) {
+    if (!currentVaultOwner) {
+      throw new Error('Vault owner is not set in non-demo mode.');
+    }
+    vaultPda = await ensureVaultExists(currentVaultOwner);
+  } else {
+    // In demo mode, use a dummy vault owner for portfolio tracking
+    if (!currentVaultOwner) {
+      currentVaultOwner = keypair.publicKey; // Use agent's own wallet as placeholder
+    }
+    vaultPda = await deriveVaultPda(currentVaultOwner);
+    console.log(`Demo mode: using simulated vault PDA ${vaultPda.toBase58()} (no on-chain validation)`);
+  }
+  
   lastError = null;
 
   const market = await getMarketData();
@@ -857,21 +876,28 @@ export const runAgentOnce = async () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   try {
-    // On-chain vault record (existing Anchor instruction)
-    const tx = await program.rpc.executeTrade(
-      mint,
-      new anchor.BN(amountValue),
-      action === 'buy',
-      newRiskScore,
-      {
-        accounts: {
-          vault: vaultPda,
-          authority: keypair.publicKey,
+    let finalTx: string | undefined;
+    
+    // Only call on-chain instruction in non-demo mode
+    if (!AGENT_DEMO_MODE) {
+      const tx = await program.rpc.executeTrade(
+        mint,
+        new anchor.BN(amountValue),
+        action === 'buy',
+        newRiskScore,
+        {
+          accounts: {
+            vault: vaultPda,
+            authority: keypair.publicKey,
+          },
         },
-      },
-    );
-
-    const finalTx = swapTx || tx;
+      );
+      finalTx = swapTx || tx;
+    } else {
+      // In demo mode, just use Jupiter swap tx if available
+      finalTx = swapTx || `demo-${Date.now()}`;
+      console.log(`Demo mode: skipped on-chain executeTrade, using ${finalTx}`);
+    }
 
     // ── Update portfolio ───────────────────────────────────────────────────
     const solPriceUsd = getTokenPriceUsd('SOL', market);
