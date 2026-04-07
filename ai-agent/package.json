@@ -8,6 +8,7 @@
     "run-once": "ts-node src/index.ts"
   },
   "dependencies": {
+    "@openrouter/sdk": "^0.11.2",
     "@project-serum/anchor": "^0.26.0",
     "@solana/web3.js": "^1.74.0",
     "axios": "^1.6.4",

@@ -1,3 +1,4 @@
+import { OpenRouter } from '@openrouter/sdk';
 import axios from 'axios';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
@@ -15,7 +16,6 @@ const ENDPOINT = (
 ).trim();
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const SECRET_KEY = process.env.AGENT_WALLET_SECRET_KEY;
@@ -328,36 +328,6 @@ const parseJsonFromModelText = (text: string): any => {
   }
 };
 
-const extractOpenRouterContent = (data: any): string => {
-  const choice = data?.choices?.[0];
-  const content = choice?.message?.content ?? choice?.text;
-
-  if (typeof content === 'string') {
-    return content.trim();
-  }
-
-  if (Array.isArray(content)) {
-    const joined = content
-      .map((part: any) => {
-        if (typeof part === 'string') {
-          return part;
-        }
-        if (typeof part?.text === 'string') {
-          return part.text;
-        }
-        if (typeof part?.content === 'string') {
-          return part.content;
-        }
-        return '';
-      })
-      .join('\n')
-      .trim();
-    return joined;
-  }
-
-  return '';
-};
-
 const askLlm = async (prompt: string) => {
   if (!OPENROUTER_API_KEY) {
     openrouterError = 'OPENROUTER_API_KEY is not configured';
@@ -365,46 +335,27 @@ const askLlm = async (prompt: string) => {
   }
 
   try {
-    const response = await axios.post(
-      OPENROUTER_BASE_URL,
-      {
+    const client = new OpenRouter({ apiKey: OPENROUTER_API_KEY });
+    const stream = await client.chat.send({
+      chatRequest: {
         model: OPENROUTER_MODEL,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: 400,
         temperature: 0.3,
-        max_tokens: 400,
-        reasoning: {
-          enabled: true,
-        },
+        stream: true,
       },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 20000,
-      },
-    );
+    });
 
-    const text = extractOpenRouterContent(response.data);
+    let text = '';
+    for await (const chunk of (stream as AsyncIterable<any>)) {
+      const content = chunk.choices?.[0]?.delta?.content;
+      if (typeof content === 'string') {
+        text += content;
+      }
+    }
+
     if (!text) {
-      const finishReason = response.data?.choices?.[0]?.finish_reason;
-      const hasReasoning = Boolean(response.data?.choices?.[0]?.message?.reasoning);
-      const details = [
-        finishReason ? `finish_reason=${finishReason}` : null,
-        hasReasoning ? 'reasoning_only=true' : null,
-      ]
-        .filter(Boolean)
-        .join(', ');
-      throw new Error(
-        details
-          ? `OpenRouter returned empty content (${details}).`
-          : 'OpenRouter returned empty content.',
-      );
+      throw new Error('OpenRouter returned empty content.');
     }
 
     openrouterError = null;
@@ -412,7 +363,7 @@ const askLlm = async (prompt: string) => {
   } catch (error) {
     const axiosError = error as any;
     openrouterError = formatProviderError('OpenRouter', error);
-    console.warn('OpenRouter request failed:', axiosError.response?.status, axiosError.response?.data || axiosError.message);
+    console.warn('OpenRouter request failed:', axiosError?.status, axiosError?.message);
     return null;
   }
 };
