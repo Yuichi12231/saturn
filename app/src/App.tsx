@@ -248,6 +248,8 @@ const AppContent = () => {
   const [selectedLabSymbol, setSelectedLabSymbol] = useState('SOLX');
   const [labCandleLimit, setLabCandleLimit] = useState(80);
   const [labCandles, setLabCandles] = useState<LabCandle[]>([]);
+  const [labView, setLabView] = useState<'overview' | 'charts'>('overview');
+  const [hoveredCandleIndex, setHoveredCandleIndex] = useState<number | null>(null);
 
   // Constants derived at module level — used as-is here.
   const AGENT_API_URL = AGENT_API_BASE_URL;
@@ -334,8 +336,8 @@ const AppContent = () => {
   );
 
   const candleChart = useMemo(() => {
-    const width = 760;
-    const height = 260;
+    const width = 960;
+    const height = labView === 'charts' ? 360 : 260;
     type CandleVisual = {
       x: number;
       wickTop: number;
@@ -344,9 +346,18 @@ const AppContent = () => {
       bodyHeight: number;
       up: boolean;
       bodyW: number;
+      closeY: number;
     };
     if (labCandles.length === 0) {
-      return { width, height, items: [] as CandleVisual[] };
+      return {
+        width,
+        height,
+        items: [] as CandleVisual[],
+        min: 0,
+        max: 0,
+        padX: 18,
+        step: 1,
+      };
     }
 
     const min = Math.min(...labCandles.map((c) => c.l));
@@ -378,11 +389,57 @@ const AppContent = () => {
         bodyHeight: Math.max(1.4, bodyBottom - bodyTop),
         up: c.c >= c.o,
         bodyW,
+        closeY: cl,
       };
     });
 
-    return { width, height, items };
-  }, [labCandles]);
+    return { width, height, items, min, max, padX, step };
+  }, [labCandles, labView]);
+
+  const tradeMarkers = useMemo(() => {
+    const symbolMap: Record<string, string> = { SOLX: 'SOL', RAYX: 'RAY', ORCX: 'ORCA' };
+    const selectedAgentSymbol = symbolMap[selectedLabSymbol];
+    if (!selectedAgentSymbol || candleChart.items.length === 0) return [] as Array<{ x: number; y: number; action: 'buy' | 'sell'; ts: string; tx?: string }>;
+
+    const actionable = agentTrades
+      .filter((t) => t.status === 'executed' && (t.action === 'buy' || t.action === 'sell') && t.symbol === selectedAgentSymbol)
+      .slice(0, 12)
+      .reverse();
+
+    return actionable.map((trade) => {
+      const tradeTs = new Date(trade.ts).getTime();
+      let bestIdx = 0;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < labCandles.length; i++) {
+        const d = Math.abs(labCandles[i].ts - tradeTs);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      const candle = candleChart.items[bestIdx];
+      if (!candle) {
+        return { x: 0, y: 0, action: trade.action as 'buy' | 'sell', ts: trade.ts, tx: trade.tx };
+      }
+      const y = trade.action === 'buy' ? candle.wickBottom + 10 : candle.wickTop - 10;
+      return { x: candle.x, y, action: trade.action as 'buy' | 'sell', ts: trade.ts, tx: trade.tx };
+    });
+  }, [agentTrades, candleChart.items, labCandles, selectedLabSymbol]);
+
+  const hoveredCandle = useMemo(
+    () => (hoveredCandleIndex === null ? null : labCandles[hoveredCandleIndex] || null),
+    [hoveredCandleIndex, labCandles],
+  );
+
+  const onCandleMouseMove = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
+    if (labCandles.length === 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const x = ((event.clientX - rect.left) / rect.width) * candleChart.width;
+    const raw = (x - candleChart.padX) / (candleChart.step || 1);
+    const idx = Math.max(0, Math.min(labCandles.length - 1, Math.round(raw)));
+    setHoveredCandleIndex(idx);
+  }, [candleChart.padX, candleChart.step, candleChart.width, labCandles.length]);
 
   const computeAnalytics = useCallback((normalized: Record<string, MarketEntry>, history: MarketSnapshot[]) => {
     const changes = Object.values(normalized).map((entry) => Number(entry.usd_24hr_change ?? 0));
@@ -1138,6 +1195,30 @@ const AppContent = () => {
       <div className="section-grid">
         <section className="card">
           <h2>Devnet Market Lab</h2>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <button
+              onClick={() => setLabView('overview')}
+              style={{
+                padding: '7px 12px',
+                borderRadius: 999,
+                background: labView === 'overview' ? 'linear-gradient(90deg,#06b6d4,#22c55e)' : 'rgba(255,255,255,0.06)',
+                color: '#fff',
+              }}
+            >
+              Overview
+            </button>
+            <button
+              onClick={() => setLabView('charts')}
+              style={{
+                padding: '7px 12px',
+                borderRadius: 999,
+                background: labView === 'charts' ? 'linear-gradient(90deg,#06b6d4,#22c55e)' : 'rgba(255,255,255,0.06)',
+                color: '#fff',
+              }}
+            >
+              Charts
+            </button>
+          </div>
           <p style={{ marginTop: 0, color: '#9ca3af', fontSize: '0.9em' }}>
             Synthetic devnet universe for demos: liquidity, trend regime, momentum and sentiment are updated live.
           </p>
@@ -1201,7 +1282,26 @@ const AppContent = () => {
               </div>
 
               <div className="candles-wrap">
-                <svg viewBox={`0 0 ${candleChart.width} ${candleChart.height}`} width="100%" height="260" role="img" aria-label="Lab token candlestick chart">
+                <svg
+                  viewBox={`0 0 ${candleChart.width} ${candleChart.height}`}
+                  width="100%"
+                  height={labView === 'charts' ? '360' : '260'}
+                  role="img"
+                  aria-label="Lab token candlestick chart"
+                  onMouseMove={onCandleMouseMove}
+                  onMouseLeave={() => setHoveredCandleIndex(null)}
+                >
+                  {hoveredCandleIndex !== null && candleChart.items[hoveredCandleIndex] && (
+                    <line
+                      x1={candleChart.items[hoveredCandleIndex].x}
+                      y1={12}
+                      x2={candleChart.items[hoveredCandleIndex].x}
+                      y2={candleChart.height - 12}
+                      stroke="rgba(148,163,184,0.45)"
+                      strokeDasharray="4 4"
+                      strokeWidth="1"
+                    />
+                  )}
                   {candleChart.items.map((item, idx) => (
                     <g key={`c-${idx}`}>
                       <line
@@ -1224,8 +1324,40 @@ const AppContent = () => {
                       />
                     </g>
                   ))}
+                  {tradeMarkers.map((marker, idx) => (
+                    <g key={`m-${idx}-${marker.ts}`}>
+                      <circle
+                        cx={marker.x}
+                        cy={marker.y}
+                        r="5"
+                        fill={marker.action === 'buy' ? '#22c55e' : '#ef4444'}
+                        stroke="rgba(255,255,255,0.85)"
+                        strokeWidth="1"
+                      />
+                      <text
+                        x={marker.x + 7}
+                        y={marker.y + 3}
+                        fontSize="10"
+                        fill={marker.action === 'buy' ? '#22c55e' : '#ef4444'}
+                      >
+                        {marker.action === 'buy' ? 'B' : 'S'}
+                      </text>
+                    </g>
+                  ))}
                 </svg>
               </div>
+
+              {hoveredCandle && (
+                <div style={{ fontSize: '0.83em', color: '#cbd5e1' }}>
+                  {new Date(hoveredCandle.ts).toLocaleTimeString()} | O {hoveredCandle.o.toFixed(4)} | H {hoveredCandle.h.toFixed(4)} | L {hoveredCandle.l.toFixed(4)} | C {hoveredCandle.c.toFixed(4)} | V {hoveredCandle.v.toFixed(2)}
+                </div>
+              )}
+
+              {labView === 'charts' && (
+                <div style={{ fontSize: '0.82em', color: '#9ca3af' }}>
+                  Markers: B = executed buy, S = executed sell from agent trade log.
+                </div>
+              )}
 
               <div style={{ fontSize: '0.84em', color: '#cbd5e1' }}>
                 Vol(24h): ${selectedLabToken?.volume24hUsd?.toFixed(0) || '0'} | MCap: ${selectedLabToken?.marketCapUsd?.toFixed(0) || '0'}
