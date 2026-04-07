@@ -92,6 +92,20 @@ interface AgentTrade {
   status: 'planned' | 'executed' | 'failed' | 'skipped';
 }
 
+interface AgentPosition {
+  amountUnits: number;
+  solSpent: number;
+  entryPriceUsd: number;
+  entryTs: string;
+  entryTx?: string;
+  swapMode: 'real' | 'paper';
+}
+
+interface AgentPortfolio {
+  positions: Partial<Record<string, AgentPosition>>;
+  realizedPnlSol: number;
+}
+
 interface TraderAnalytics {
   breadthPct: number;
   avg24hChange: number;
@@ -186,6 +200,7 @@ const AppContent = () => {
   const [withdrawSolInput, setWithdrawSolInput] = useState('0.1');
   const [agentHealth, setAgentHealth] = useState<AgentHealth | null>(null);
   const [agentTrades, setAgentTrades] = useState<AgentTrade[]>([]);
+  const [agentPortfolio, setAgentPortfolio] = useState<AgentPortfolio | null>(null);
   const [agentStrategy, setAgentStrategy] = useState<'auto' | 'llm' | 'rule'>('auto');
   const [marketAnalytics, setMarketAnalytics] = useState<TraderAnalytics | null>(null);
   const [marketSource, setMarketSource] = useState('loading');
@@ -835,6 +850,9 @@ const AppContent = () => {
       if (result.lastAction) {
         setRecommendation(result.lastAction);
       }
+      if (result.portfolio) {
+        setAgentPortfolio(result.portfolio as AgentPortfolio);
+      }
     }
   }, [callAgentApi]);
 
@@ -1351,6 +1369,38 @@ const AppContent = () => {
           {'\n'}Agent SOL: {typeof agentHealth?.agentBalanceSol === 'number' ? agentHealth.agentBalanceSol.toFixed(4) : 'unknown'}
         </pre>
         <h3 style={{ marginTop: 18 }}>Recent Agent Trades</h3>
+        {/* ── Portfolio ─────────────────────────────────────────────────────── */}
+        <h3 style={{ marginTop: 18 }}>Portfolio</h3>
+        {agentPortfolio && Object.keys(agentPortfolio.positions).length > 0 ? (
+          <div style={{ display: 'grid', gap: 8, marginBottom: 8 }}>
+            {(Object.entries(agentPortfolio.positions) as [string, AgentPosition][]).map(([sym, pos]) => (
+              <div key={sym} style={{ border: '1px solid rgba(34,197,94,0.3)', borderRadius: 10, padding: '8px 12px', background: 'rgba(34,197,94,0.06)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                  <strong style={{ color: '#22c55e' }}>{sym}</strong>
+                  <span style={{ color: '#9ca3af', fontSize: '0.87em' }}>{pos.swapMode === 'real' ? '⛓ real swap' : '📄 paper'}</span>
+                </div>
+                <div style={{ color: '#cbd5e1', fontSize: '0.9em', marginTop: 4 }}>
+                  {pos.amountUnits.toFixed(4)} units &nbsp;·&nbsp; spent {pos.solSpent.toFixed(4)} SOL &nbsp;·&nbsp; entry ${pos.entryPriceUsd.toFixed(4)}
+                </div>
+                {pos.entryTx && <div className="long-value" style={{ color: '#60a5fa', fontSize: '0.8em', marginTop: 2 }}>Tx: {pos.entryTx}</div>}
+              </div>
+            ))}
+            <div style={{ color: agentPortfolio.realizedPnlSol >= 0 ? '#22c55e' : '#ef4444', fontSize: '0.92em', paddingLeft: 2 }}>
+              Realized P&amp;L: {agentPortfolio.realizedPnlSol >= 0 ? '+' : ''}{agentPortfolio.realizedPnlSol.toFixed(6)} SOL
+            </div>
+          </div>
+        ) : (
+          <p style={{ color: '#9ca3af', marginBottom: 8 }}>
+            No open positions. Agent will buy when it sees a good opportunity.
+            {typeof agentPortfolio?.realizedPnlSol === 'number' && agentPortfolio.realizedPnlSol !== 0 && (
+              <span style={{ color: agentPortfolio.realizedPnlSol >= 0 ? '#22c55e' : '#ef4444' }}>
+                {' '}Realized P&amp;L: {agentPortfolio.realizedPnlSol >= 0 ? '+' : ''}{agentPortfolio.realizedPnlSol.toFixed(6)} SOL
+              </span>
+            )}
+          </p>
+        )}
+        {/* ── Recent Trades ─────────────────────────────────────────────────── */}
+        <h3 style={{ marginTop: 8 }}>Recent Agent Trades</h3>
         {agentTrades.length === 0 ? (
           <p style={{ color: '#9ca3af' }}>
             No trade history yet. Start agent to see autonomous decisions. Note: history is in-memory and resets when backend restarts/redeploys.

@@ -3,7 +3,7 @@ import axios from 'axios';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
 import * as anchor from '@project-serum/anchor';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 
 dotenv.config();
 
@@ -16,6 +16,17 @@ const ENDPOINT = (
 ).trim();
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
+
+// Jupiter v6 API (mainnet; gracefully skipped with paper-trade fallback on devnet)
+const JUPITER_API = 'https://quote-api.jup.ag/v6';
+// Mainnet mint addresses for Jupiter routes
+const JUPITER_MINTS: Record<string, string> = {
+  SOL: 'So11111111111111111111111111111111111111112',
+  RAY: '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',
+  ORCA: 'orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE',
+};
+// SOL committed per 1 amount-unit (agent amount: 1-10 → 0.01-0.10 SOL)
+const TRADE_SOL_PER_UNIT = 0.01;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const SECRET_KEY = process.env.AGENT_WALLET_SECRET_KEY;
@@ -307,6 +318,43 @@ const getBirdEyeMarket = async () => {
   }
 };
 
+// ── Jupiter v6 real swap (mainnet; falls back to paper-trade on devnet) ────────
+const executeJupiterSwap = async (
+  inputSymbol: string,
+  outputSymbol: string,
+  inputAmountLamports: number,
+): Promise<string> => {
+  const inputMint = JUPITER_MINTS[inputSymbol] ?? JUPITER_MINTS.SOL;
+  const outputMint = JUPITER_MINTS[outputSymbol] ?? JUPITER_MINTS.SOL;
+
+  const quoteResp = await axios.get(`${JUPITER_API}/quote`, {
+    params: { inputMint, outputMint, amount: inputAmountLamports, slippageBps: 50 },
+    timeout: 15000,
+  });
+
+  const swapResp = await axios.post(
+    `${JUPITER_API}/swap`,
+    {
+      quoteResponse: quoteResp.data,
+      userPublicKey: keypair.publicKey.toBase58(),
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+      prioritizationFeeLamports: 'auto',
+    },
+    { timeout: 15000 },
+  );
+
+  const txBuf = Buffer.from(swapResp.data.swapTransaction, 'base64');
+  const tx = VersionedTransaction.deserialize(txBuf);
+  tx.sign([keypair]);
+
+  const sig = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+  const blockhash = await connection.getLatestBlockhash();
+  await connection.confirmTransaction({ signature: sig, ...blockhash }, 'confirmed');
+  return sig;
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 const parseJsonFromModelText = (text: string): any => {
   const trimmed = text.trim();
   const withoutFence = trimmed
@@ -377,9 +425,22 @@ const buildPrompt = (market: any, heliusSignals: any, birdeyeMarket: any) => {
         nativeTransfers: tx?.nativeTransfers?.length ?? 0,
       }))
     : heliusSignals;
-  return `Market summary: ${JSON.stringify(market)}\nOn-chain signals (last 3 txs): ${JSON.stringify(
-    signalSummary,
-  )}\nBirdEye market data: ${JSON.stringify(birdeyeMarket)}\nChoose one action: buy, sell, or hold. If buy or sell, select a Solana SPL token from RAY, ORCA, or SOL and return a JSON object with keys action, symbol, amount, riskScore, and reason.`;
+
+  const portfolioLines = (Object.entries(agentPortfolio) as [string, Position][])
+    .map(([sym, pos]) => `${sym}: ${pos.amountUnits.toFixed(4)} units, spent ${pos.solSpent.toFixed(4)} SOL, entry $${pos.entryPriceUsd.toFixed(4)}, mode=${pos.swapMode}`)
+    .join('; ') || 'none';
+  const pnlStr = `${realizedPnlSol >= 0 ? '+' : ''}${realizedPnlSol.toFixed(6)} SOL`;
+
+  return [
+    `Market summary: ${JSON.stringify(market)}`,
+    `On-chain signals (last 3 txs): ${JSON.stringify(signalSummary)}`,
+    `BirdEye market data: ${JSON.stringify(birdeyeMarket)}`,
+    `Current portfolio: ${portfolioLines}`,
+    `Realized P&L: ${pnlStr}`,
+    'Rules: only sell if you currently hold that token; prefer diversification; do not double-buy the same token unless entry was significantly lower.',
+    'Choose one action: buy, sell, or hold. If buy or sell, select a Solana SPL token from RAY, ORCA, or SOL.',
+    'Return a JSON object with keys: action, symbol, amount (1-10 token units), riskScore (1-99), reason.',
+  ].join('\n');
 };
 
 const symbolToMint: Record<string, string> = {
@@ -410,6 +471,29 @@ interface TradeRecord {
   tx?: string;
   status: 'planned' | 'executed' | 'failed' | 'skipped';
 }
+
+// ── Portfolio ─────────────────────────────────────────────────────────────────
+interface Position {
+  amountUnits: number;   // token units held (from decision)
+  solSpent: number;      // SOL invested
+  entryPriceUsd: number; // token USD price at entry
+  entryTs: string;
+  entryTx?: string;      // real swap tx hash if available
+  swapMode: 'real' | 'paper';
+}
+
+const agentPortfolio: Partial<Record<'SOL' | 'RAY' | 'ORCA', Position>> = {};
+let realizedPnlSol = 0;
+
+const SYMBOL_MARKET_KEY: Record<string, string> = {
+  SOL: 'solana',
+  RAY: 'raydium',
+  ORCA: 'orca',
+};
+
+const getTokenPriceUsd = (symbol: string, market: any): number =>
+  Number(market?.[SYMBOL_MARKET_KEY[symbol]]?.usd || 0) || 1;
+// ──────────────────────────────────────────────────────────────────────────────
 
 let scheduledAgent: ReturnType<typeof setInterval> | null = null;
 let currentIntervalMinutes = 1;
@@ -537,6 +621,10 @@ export const getAgentState = () => ({
   agentPublicKey: keypair.publicKey.toBase58(),
   vaultOwner: currentVaultOwner?.toBase58() || null,
   tradeHistory: tradeHistory.slice(0, 20),
+  portfolio: {
+    positions: agentPortfolio,
+    realizedPnlSol,
+  },
 });
 
 export const getTradeHistory = () => tradeHistory.slice(0, 50);
@@ -633,7 +721,55 @@ export const runAgentOnce = async () => {
     return { action, message };
   }
 
+  // ── Guard: can't sell a token we don't hold ────────────────────────────────
+  if (action === 'sell' && !agentPortfolio[symbol as 'SOL' | 'RAY' | 'ORCA']) {
+    const skipMsg = `No ${symbol} position to sell — skipping.`;
+    pushTradeRecord({
+      ts: new Date().toISOString(),
+      action: 'hold',
+      symbol,
+      amount: 0,
+      riskScore: newRiskScore,
+      source: chosen.source,
+      reason: skipMsg,
+      status: 'skipped',
+    });
+    lastMessage = skipMsg;
+    return { action: 'hold', message: skipMsg };
+  }
+
+  // ── Try real Jupiter swap (silently falls back to paper-trade on devnet) ───
+  const tradeSolAmount = Math.max(amountValue * TRADE_SOL_PER_UNIT, 0.001);
+  const tradeLamports = Math.round(tradeSolAmount * 1e9);
+  let swapTx: string | undefined;
+  let swapMode: 'real' | 'paper' = 'paper';
+
+  if (action === 'buy') {
+    try {
+      const agentBal = await connection.getBalance(keypair.publicKey);
+      if (agentBal > tradeLamports + 10_000_000) {
+        swapTx = await executeJupiterSwap('SOL', symbol, tradeLamports);
+        swapMode = 'real';
+        console.log(`Jupiter BUY ${symbol}: ${swapTx}`);
+      }
+    } catch (swapErr) {
+      console.log(`Jupiter BUY unavailable (paper-trade): ${(swapErr as any)?.message?.slice(0, 120)}`);
+    }
+  } else if (action === 'sell') {
+    try {
+      // For real sell, we'd need actual token balance — paper portfolio tracks units
+      // Real swap: sell all units we think we hold at current SOL equivalent
+      swapTx = await executeJupiterSwap(symbol, 'SOL', tradeLamports);
+      swapMode = 'real';
+      console.log(`Jupiter SELL ${symbol}: ${swapTx}`);
+    } catch (swapErr) {
+      console.log(`Jupiter SELL unavailable (paper-trade): ${(swapErr as any)?.message?.slice(0, 120)}`);
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   try {
+    // On-chain vault record (existing Anchor instruction)
     const tx = await program.rpc.executeTrade(
       mint,
       new anchor.BN(amountValue),
@@ -647,7 +783,55 @@ export const runAgentOnce = async () => {
       },
     );
 
-    lastMessage = `${message} Transaction: ${tx}`;
+    const finalTx = swapTx || tx;
+
+    // ── Update portfolio ───────────────────────────────────────────────────
+    const solPriceUsd = getTokenPriceUsd('SOL', market);
+    const tokenPriceUsd = getTokenPriceUsd(symbol, market);
+    const sym = symbol as 'SOL' | 'RAY' | 'ORCA';
+
+    if (action === 'buy') {
+      const existing = agentPortfolio[sym];
+      if (existing) {
+        // Average into existing position
+        const totalUnits = existing.amountUnits + amountValue;
+        existing.entryPriceUsd = (existing.entryPriceUsd * existing.amountUnits + tokenPriceUsd * amountValue) / totalUnits;
+        existing.amountUnits = totalUnits;
+        existing.solSpent += tradeSolAmount;
+        if (swapMode === 'real') {
+          existing.swapMode = 'real';
+          existing.entryTx = finalTx;
+        }
+      } else {
+        agentPortfolio[sym] = {
+          amountUnits: amountValue,
+          solSpent: tradeSolAmount,
+          entryPriceUsd: tokenPriceUsd,
+          entryTs: new Date().toISOString(),
+          entryTx: swapTx,
+          swapMode,
+        };
+      }
+    } else if (action === 'sell') {
+      const pos = agentPortfolio[sym];
+      if (pos) {
+        const sellUnits = Math.min(amountValue, pos.amountUnits);
+        const fraction = sellUnits / pos.amountUnits;
+        const exitValueSol = solPriceUsd > 0 ? (sellUnits * tokenPriceUsd) / solPriceUsd : pos.solSpent * fraction;
+        const pnlSol = exitValueSol - pos.solSpent * fraction;
+        realizedPnlSol += pnlSol;
+        console.log(`P&L ${symbol} sell: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`);
+        if (sellUnits >= pos.amountUnits - 0.0001) {
+          delete agentPortfolio[sym];
+        } else {
+          pos.amountUnits -= sellUnits;
+          pos.solSpent -= pos.solSpent * fraction;
+        }
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    lastMessage = `${message} | swap=${swapMode} tx=${finalTx}`;
     pushTradeRecord({
       ts: new Date().toISOString(),
       action,
@@ -656,10 +840,10 @@ export const runAgentOnce = async () => {
       riskScore: newRiskScore,
       source: chosen.source,
       reason,
-      tx,
+      tx: finalTx,
       status: 'executed',
     });
-    return { action, message, tx };
+    return { action, message, tx: finalTx };
   } catch (error) {
     const errorMessage = (error as any)?.message || 'Transaction failed';
     lastMessage = `Failed to execute trade: ${errorMessage}`;
