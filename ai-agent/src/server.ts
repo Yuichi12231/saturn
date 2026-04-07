@@ -79,5 +79,7 @@ app.get('*', (req: Request, res: Response) => {
 });
 
 app.listen(port, () => {
-  console.log(`AI agent backend listening on http://localhost:${port}`);
+  const state = getAgentState();
+  console.log(`[SERVER] AI agent backend listening on http://localhost:${port}`);
+  console.log(`[SERVER] Agent status: ${state.message}`);
 });

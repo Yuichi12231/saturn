@@ -17,6 +17,15 @@ const ENDPOINT = (
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 
+// Log environment configuration at startup
+console.log('[AGENT INIT] Environment Variables:');
+console.log(`  AGENT_DEMO_MODE=${process.env.AGENT_DEMO_MODE} (parsed as: ${AGENT_DEMO_MODE})`);
+console.log(`  OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY ? '***' : 'NOT SET'}`);
+console.log(`  SOLANA_RPC_URL=${process.env.SOLANA_RPC_URL || 'using default'}`);
+console.log(`  HELIUS_API_KEY=${process.env.HELIUS_API_KEY ? '***' : 'NOT SET'}`);
+console.log(`  AGENT_WALLET_SECRET_KEY=${process.env.AGENT_WALLET_SECRET_KEY ? '***' : 'NOT SET'}`);
+console.log('');
+
 const getOpenRouterKeySource = (): string | null => {
   if (process.env.OPENROUTER_API_KEY?.trim()) return 'OPENROUTER_API_KEY';
   if (process.env.OPENROUTER_API_TOKEN?.trim()) return 'OPENROUTER_API_TOKEN';
