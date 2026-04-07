@@ -21,6 +21,7 @@ import {
 } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter } from '@solana/wallet-adapter-wallets';
 import idl from './idl/vault_ai.json';
+import { TokenLogo } from './tokenLogos';
 
 const PROGRAM_ID = new PublicKey('csiotTu5ChbPzzjnpbNyWkfAQmyRNqTvLw362xUkn8y');
 const network = WalletAdapterNetwork.Devnet;
@@ -51,6 +52,21 @@ interface VaultState {
   mode: number;
   enabled: boolean;
   holdings: TokenHolding[];
+  lastUpdated: anchor.BN;
+}
+
+interface VaultAccountRecord {
+  owner: PublicKey;
+  agentAuthority: PublicKey;
+  totalValue: anchor.BN;
+  riskScore: number;
+  mode: number;
+  enabled: boolean;
+  holdings: Array<{
+    mint: PublicKey;
+    amount: anchor.BN;
+    confidence: number;
+  }>;
   lastUpdated: anchor.BN;
 }
 
@@ -164,21 +180,6 @@ interface LabCandle {
   v: number;
 }
 
-const LOGO_GRADIENTS: Record<string, string> = {
-  SOLX: 'linear-gradient(135deg,#22d3ee,#0ea5e9)',
-  RAYX: 'linear-gradient(135deg,#f472b6,#e879f9)',
-  ORCX: 'linear-gradient(135deg,#34d399,#10b981)',
-  ATM: 'linear-gradient(135deg,#f59e0b,#f97316)',
-  LQD: 'linear-gradient(135deg,#06b6d4,#22c55e)',
-  NOVA: 'linear-gradient(135deg,#8b5cf6,#6366f1)',
-  BETA: 'linear-gradient(135deg,#60a5fa,#2563eb)',
-  GAM: 'linear-gradient(135deg,#84cc16,#22c55e)',
-  ALF: 'linear-gradient(135deg,#fb7185,#f43f5e)',
-  DEL: 'linear-gradient(135deg,#14b8a6,#0d9488)',
-  OME: 'linear-gradient(135deg,#a78bfa,#7c3aed)',
-  SIG: 'linear-gradient(135deg,#f97316,#ef4444)',
-};
-
 const MIN_LAMPORTS_FOR_TX = 1_000_000;
 
 const extractErrorMessage = (error: unknown): string => {
@@ -215,6 +216,8 @@ const buildSparklinePath = (series: number[], width = 160, height = 46): string 
     })
     .join(' ');
 };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const AppContent = () => {
   const wallet = useWallet();
@@ -641,14 +644,67 @@ const AppContent = () => {
     setLoading(true);
     setStatus('Loading vault state...');
     try {
+      const syncVaultState = async () => {
+        const [vaultPda] = await PublicKey.findProgramAddress(
+          [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
+          PROGRAM_ID,
+        );
+        const rawAccount = await program.account.vault.fetch(vaultPda);
+        const account = rawAccount as unknown as VaultAccountRecord;
+        const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
+        const rentExemptMin = await connection.getMinimumBalanceForRentExemption(vaultAccountInfo?.data.length || 0);
+        const vaultSolLamports = Math.max((vaultAccountInfo?.lamports || 0) - rentExemptMin, 0);
+        const mode = account.mode === 0 ? 'safe' : 'risk';
+
+        setVaultAccountLamports(vaultAccountInfo?.lamports || 0);
+        setVaultRentReserveLamports(rentExemptMin);
+        setVaultSolBalanceLamports(vaultSolLamports);
+        setVault({
+          owner: account.owner,
+          agentAuthority: account.agentAuthority,
+          totalValue: account.totalValue,
+          riskScore: account.riskScore,
+          mode: account.mode,
+          enabled: account.enabled,
+          holdings: account.holdings.map((item) => ({
+            mint: item.mint,
+            amount: item.amount,
+            confidence: item.confidence,
+          })),
+          lastUpdated: account.lastUpdated,
+        });
+        setVaultMode(mode);
+        setPendingVaultMode(mode);
+        setVaultEnabled(account.enabled);
+      };
+
+      await syncVaultState();
+      setStatus('Vault loaded');
+    } catch (error) {
+      console.warn('Vault not found or failed to load', error);
+      setVault(null);
+      setVaultSolBalanceLamports(0);
+      setVaultAccountLamports(0);
+      setVaultRentReserveLamports(0);
+      setStatus('Vault not created yet');
+    } finally {
+      setLoading(false);
+    }
+  }, [anchorWallet, connection, program]);
+
+  const syncVaultStateSilently = useCallback(async () => {
+    if (!program || !anchorWallet) return false;
+    try {
       const [vaultPda] = await PublicKey.findProgramAddress(
         [Buffer.from('vault'), anchorWallet.publicKey!.toBuffer()],
         PROGRAM_ID,
       );
-      const account = await program.account.vault.fetch(vaultPda);
+      const rawAccount = await program.account.vault.fetch(vaultPda);
+      const account = rawAccount as unknown as VaultAccountRecord;
       const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
       const rentExemptMin = await connection.getMinimumBalanceForRentExemption(vaultAccountInfo?.data.length || 0);
       const vaultSolLamports = Math.max((vaultAccountInfo?.lamports || 0) - rentExemptMin, 0);
+
       setVaultAccountLamports(vaultAccountInfo?.lamports || 0);
       setVaultRentReserveLamports(rentExemptMin);
       const mode = account.mode === 0 ? 'safe' : 'risk';
@@ -670,18 +726,26 @@ const AppContent = () => {
       setVaultMode(mode);
       setPendingVaultMode(mode);
       setVaultEnabled(account.enabled);
-      setStatus('Vault loaded');
+      return true;
     } catch (error) {
-      console.warn('Vault not found or failed to load', error);
-      setVault(null);
-      setVaultSolBalanceLamports(0);
-      setVaultAccountLamports(0);
-      setVaultRentReserveLamports(0);
-      setStatus('Vault not created yet');
-    } finally {
-      setLoading(false);
+      console.warn('Silent vault sync failed', error);
+      return false;
     }
-  }, [anchorWallet, program]);
+  }, [anchorWallet, connection, program]);
+
+  const refreshVaultAfterMutation = useCallback(async (successMessage: string) => {
+    setStatus(successMessage);
+    for (const delayMs of [250, 800, 1600]) {
+      await sleep(delayMs);
+      const synced = await syncVaultStateSilently();
+      if (synced) {
+        setStatus(successMessage);
+        return true;
+      }
+    }
+    setStatus(`${successMessage} Chain state is updating; reload data in a moment if balances lag.`);
+    return false;
+  }, [syncVaultStateSilently]);
 
   const createVault = useCallback(async () => {
     if (!program || !anchorWallet) {
@@ -738,8 +802,7 @@ const AppContent = () => {
           systemProgram: anchor.web3.SystemProgram.programId,
         },
       });
-      setStatus('✅ Vault created successfully!');
-      await fetchVault();
+      await refreshVaultAfterMutation('✅ Vault created successfully!');
     } catch (error) {
       const err = error as any;
       console.error('Vault creation error:', err);
@@ -767,7 +830,7 @@ const AppContent = () => {
     } finally {
       setLoading(false);
     }
-  }, [anchorWallet, connection, fetchVault, program]);
+  }, [anchorWallet, connection, program, refreshVaultAfterMutation]);
 
 
   const toggleVaultMode = useCallback(async (newMode: 'safe' | 'risk', enabled: boolean) => {
@@ -801,15 +864,14 @@ const AppContent = () => {
       });
       setVaultMode(newMode);
       setVaultEnabled(enabled);
-      setStatus(`Vault mode set to ${newMode} (${enabled ? 'enabled' : 'disabled'})`);
-      await fetchVault();
+      await refreshVaultAfterMutation(`Vault mode set to ${newMode} (${enabled ? 'enabled' : 'disabled'})`);
     } catch (error) {
       console.error('Failed to set vault mode:', error);
       setStatus(`Failed to set vault mode: ${extractErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
-  }, [program, anchorWallet, vault, fetchVault, connection]);
+  }, [program, anchorWallet, vault, refreshVaultAfterMutation, connection]);
 
   const depositSol = useCallback(async () => {
     if (!program || !anchorWallet || !vault) return;
@@ -838,7 +900,7 @@ const AppContent = () => {
         PROGRAM_ID,
       );
 
-      await program.rpc.depositSol(new anchor.BN(amountLamports), {
+      const tx = await program.rpc.depositSol(new anchor.BN(amountLamports), {
         accounts: {
           vault: vaultPda,
           authority: anchorWallet.publicKey,
@@ -846,14 +908,13 @@ const AppContent = () => {
         },
       });
 
-      setStatus(`Deposited ${amountSol} SOL to vault.`);
-      await fetchVault();
+      await refreshVaultAfterMutation(`Deposited ${amountSol} SOL to vault. Tx: ${tx.slice(0, 8)}...`);
     } catch (error) {
       setStatus(`Failed to deposit SOL: ${extractErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
-  }, [program, anchorWallet, vault, walletMatchesVaultOwner, depositSolInput, fetchVault]);
+  }, [program, anchorWallet, vault, walletMatchesVaultOwner, depositSolInput, refreshVaultAfterMutation]);
 
   const withdrawSol = useCallback(async () => {
     if (!program || !anchorWallet || !vault) return;
@@ -882,21 +943,20 @@ const AppContent = () => {
         PROGRAM_ID,
       );
 
-      await program.rpc.withdrawSol(new anchor.BN(amountLamports), {
+      const tx = await program.rpc.withdrawSol(new anchor.BN(amountLamports), {
         accounts: {
           vault: vaultPda,
           authority: anchorWallet.publicKey,
         },
       });
 
-      setStatus(`Withdrew ${amountSol} SOL from vault.`);
-      await fetchVault();
+      await refreshVaultAfterMutation(`Withdrew ${amountSol} SOL from vault. Tx: ${tx.slice(0, 8)}...`);
     } catch (error) {
       setStatus(`Failed to withdraw SOL: ${extractErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
-  }, [program, anchorWallet, vault, walletMatchesVaultOwner, withdrawSolInput, fetchVault]);
+  }, [program, anchorWallet, vault, walletMatchesVaultOwner, withdrawSolInput, refreshVaultAfterMutation]);
 
   const setVaultAgentAuthority = useCallback(async (agentAuthorityBase58: string) => {
     if (!program || !anchorWallet || !vault) return false;
@@ -1235,12 +1295,7 @@ const AppContent = () => {
                       onClick={() => setSelectedLabSymbol(token.symbol)}
                       className={`lab-switch-btn ${active ? 'active' : ''}`}
                     >
-                      <span
-                        className="lab-token-logo"
-                        style={{ background: LOGO_GRADIENTS[token.symbol] || 'linear-gradient(135deg,#64748b,#334155)' }}
-                      >
-                        {token.symbol.slice(0, 2)}
-                      </span>
+                      <TokenLogo symbol={token.symbol} size={24} />
                       <span>{token.symbol}</span>
                     </button>
                   );
@@ -1249,7 +1304,10 @@ const AppContent = () => {
 
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <div>
-                  <strong style={{ fontSize: '1.05em' }}>{selectedLabToken?.symbol} <span style={{ color: '#9ca3af', fontWeight: 500 }}>({selectedLabToken?.name})</span></strong>
+                  <strong style={{ fontSize: '1.05em', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    {selectedLabToken && <TokenLogo symbol={selectedLabToken.symbol} size={28} />}
+                    <span>{selectedLabToken?.symbol} <span style={{ color: '#9ca3af', fontWeight: 500 }}>({selectedLabToken?.name})</span></span>
+                  </strong>
                   <div style={{ color: '#cbd5e1', fontSize: '0.9em', marginTop: 3 }}>
                     Trend: {selectedLabToken?.trend || 'n/a'} | Momentum: {selectedLabToken ? (selectedLabToken.momentum * 100).toFixed(1) : '0.0'} | Fundamentals: {selectedLabToken ? (selectedLabToken.fundamentals * 100).toFixed(1) : '0.0'} | Sentiment: {selectedLabToken ? (selectedLabToken.sentiment * 100).toFixed(1) : '0.0'}
                   </div>
