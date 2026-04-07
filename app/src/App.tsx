@@ -1018,29 +1018,16 @@ const AppContent = () => {
   }, [program, anchorWallet, vault, fetchVault, connection]);
 
   const requestStartConsentSignature = useCallback(async (): Promise<boolean> => {
-    if (!program || !anchorWallet) return false;
+    if (!wallet.signMessage || !anchorWallet) return false;
     try {
-      const balance = await connection.getBalance(anchorWallet.publicKey!);
-      if (balance < MIN_LAMPORTS_FOR_TX) {
-        setAgentStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
-        return false;
-      }
-
-      const tx = new anchor.web3.Transaction().add(
-        new anchor.web3.TransactionInstruction({
-          programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-          keys: [{ pubkey: anchorWallet.publicKey!, isSigner: true, isWritable: false }],
-          data: Buffer.from(`saturn-start-consent:${Date.now()}`),
-        }),
-      );
-
-      await (program.provider as AnchorProvider).sendAndConfirm(tx, []);
+      const message = new TextEncoder().encode(`saturn-start-consent:${Date.now()}`);
+      await wallet.signMessage(message);
       return true;
     } catch (error) {
       setAgentStatus(`Start consent signature failed: ${extractErrorMessage(error)}`);
       return false;
     }
-  }, [program, anchorWallet, connection]);
+  }, [wallet, anchorWallet]);
 
   const callAgentApi = useCallback(async (path: string, method = 'GET', body?: any) => {
     if (!agentBackendConfigured) {
