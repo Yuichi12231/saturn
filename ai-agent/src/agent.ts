@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import * as anchor from '@project-serum/anchor';
 import fs from 'fs';
 import path from 'path';
-import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { Connection, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
 import { NATIVE_MINT } from '@solana/spl-token';
 import { DEVNET_PROGRAM_ID, Raydium, TxVersion } from '@raydium-io/raydium-sdk-v2';
 import { getAgentMarketSliceFromLab } from './marketLab';
@@ -199,6 +199,25 @@ const keypair = anchor.web3.Keypair.fromSecretKey(parseSecretKey(SECRET_KEY));
 const connection = new Connection(ENDPOINT, 'processed');
 let raydiumClient: Raydium | null = null;
 
+const confirmSignatureByPolling = async (signature: string, timeoutMs = 90_000): Promise<void> => {
+  const startedAt = Date.now();
+  while ((Date.now() - startedAt) < timeoutMs) {
+    const statusResponse = await connection.getSignatureStatuses([signature]);
+    const status = statusResponse.value[0];
+
+    if (status?.err) {
+      throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+    }
+    if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+
+  throw new Error(`Timed out waiting for transaction confirmation: ${signature}`);
+};
+
 const getRaydiumClient = async (): Promise<Raydium> => {
   if (raydiumClient) return raydiumClient;
   raydiumClient = await Raydium.load({
@@ -250,7 +269,13 @@ const executeRaydiumSwap = async (
     },
   });
 
-  const { txId } = await txData.execute({ sendAndConfirm: true });
+  const transaction = txData.transaction as Transaction;
+  transaction.recentBlockhash = (await connection.getLatestBlockhash('confirmed')).blockhash;
+  transaction.feePayer = keypair.publicKey;
+  transaction.sign(...txData.signers);
+
+  const txId = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true, maxRetries: 3 });
+  await confirmSignatureByPolling(txId);
   return txId;
 };
 
@@ -337,7 +362,7 @@ const ensureVaultExists = async (owner: PublicKey) => {
 
 const getMarketData = async () => {
   if (MARKET_LAB_MODE) {
-    const synthetic = getAgentMarketSliceFromLab();
+    const synthetic = await getAgentMarketSliceFromLab();
     marketDataError = null;
     cachedMarketSnapshot = synthetic;
     cachedMarketSnapshotAt = Date.now();
@@ -676,6 +701,15 @@ const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
   } catch (error) {
     const e = error as any;
     const status = e?.statusCode || e?.status || e?.response?.status;
+    const message = String(e?.message || '');
+
+    // Retry transient parsing/network issues (max 3 retries total)
+    if (retryCount < 3 && (message.includes('Model output is not valid JSON') || message.toLowerCase().includes('fetch failed'))) {
+      const backoffMs = 1000 * Math.pow(2, retryCount);
+      console.warn(`OpenRouter transient error. Retrying in ${backoffMs}ms (attempt ${retryCount + 1}/3)`);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      return askLlm(prompt, retryCount + 1);
+    }
 
     // Handle rate limiting with exponential backoff (max 3 retries)
     if (status === 429 && retryCount < 3) {
@@ -950,6 +984,59 @@ export const getAgentHealth = async () => {
   };
 };
 
+const applyPortfolioUpdate = (
+  action: 'buy' | 'sell',
+  symbol: 'SOL' | 'RAY' | 'ORCA',
+  amountValue: number,
+  tradeSolAmount: number,
+  market: any,
+  swapMode: 'real' | 'paper',
+  finalTx?: string,
+) => {
+  const solPriceUsd = getTokenPriceUsd('SOL', market);
+  const tokenPriceUsd = getTokenPriceUsd(symbol, market);
+  const sym = symbol as 'SOL' | 'RAY' | 'ORCA';
+
+  if (action === 'buy') {
+    const existing = agentPortfolio[sym];
+    if (existing) {
+      const totalUnits = existing.amountUnits + amountValue;
+      existing.entryPriceUsd = (existing.entryPriceUsd * existing.amountUnits + tokenPriceUsd * amountValue) / totalUnits;
+      existing.amountUnits = totalUnits;
+      existing.solSpent += tradeSolAmount;
+      if (swapMode === 'real') {
+        existing.swapMode = 'real';
+        existing.entryTx = finalTx;
+      }
+    } else {
+      agentPortfolio[sym] = {
+        amountUnits: amountValue,
+        solSpent: tradeSolAmount,
+        entryPriceUsd: tokenPriceUsd,
+        entryTs: new Date().toISOString(),
+        entryTx: finalTx,
+        swapMode,
+      };
+    }
+  } else {
+    const pos = agentPortfolio[sym];
+    if (pos) {
+      const sellUnits = Math.min(amountValue, pos.amountUnits);
+      const fraction = sellUnits / pos.amountUnits;
+      const exitValueSol = solPriceUsd > 0 ? (sellUnits * tokenPriceUsd) / solPriceUsd : pos.solSpent * fraction;
+      const pnlSol = exitValueSol - pos.solSpent * fraction;
+      realizedPnlSol += pnlSol;
+      console.log(`P&L ${symbol} sell: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`);
+      if (sellUnits >= pos.amountUnits - 0.0001) {
+        delete agentPortfolio[sym];
+      } else {
+        pos.amountUnits -= sellUnits;
+        pos.solSpent -= pos.solSpent * fraction;
+      }
+    }
+  }
+};
+
 export const runAgentOnce = async () => {
   if (!currentVaultOwner) {
     throw new Error('Vault owner is not set. Start the agent from UI with a connected wallet first.');
@@ -1086,52 +1173,7 @@ export const runAgentOnce = async () => {
       },
     );
     finalTx = swapTx || tx;
-
-    // ── Update portfolio ───────────────────────────────────────────────────
-    const solPriceUsd = getTokenPriceUsd('SOL', market);
-    const tokenPriceUsd = getTokenPriceUsd(symbol, market);
-    const sym = symbol as 'SOL' | 'RAY' | 'ORCA';
-
-    if (action === 'buy') {
-      const existing = agentPortfolio[sym];
-      if (existing) {
-        // Average into existing position
-        const totalUnits = existing.amountUnits + amountValue;
-        existing.entryPriceUsd = (existing.entryPriceUsd * existing.amountUnits + tokenPriceUsd * amountValue) / totalUnits;
-        existing.amountUnits = totalUnits;
-        existing.solSpent += tradeSolAmount;
-        if (swapMode === 'real') {
-          existing.swapMode = 'real';
-          existing.entryTx = finalTx;
-        }
-      } else {
-        agentPortfolio[sym] = {
-          amountUnits: amountValue,
-          solSpent: tradeSolAmount,
-          entryPriceUsd: tokenPriceUsd,
-          entryTs: new Date().toISOString(),
-          entryTx: swapTx,
-          swapMode,
-        };
-      }
-    } else if (action === 'sell') {
-      const pos = agentPortfolio[sym];
-      if (pos) {
-        const sellUnits = Math.min(amountValue, pos.amountUnits);
-        const fraction = sellUnits / pos.amountUnits;
-        const exitValueSol = solPriceUsd > 0 ? (sellUnits * tokenPriceUsd) / solPriceUsd : pos.solSpent * fraction;
-        const pnlSol = exitValueSol - pos.solSpent * fraction;
-        realizedPnlSol += pnlSol;
-        console.log(`P&L ${symbol} sell: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`);
-        if (sellUnits >= pos.amountUnits - 0.0001) {
-          delete agentPortfolio[sym];
-        } else {
-          pos.amountUnits -= sellUnits;
-          pos.solSpent -= pos.solSpent * fraction;
-        }
-      }
-    }
-    // ──────────────────────────────────────────────────────────────────────
+    applyPortfolioUpdate(action, symbol, amountValue, tradeSolAmount, market, swapMode, finalTx);
 
     lastMessage = `${message} | swap=${swapMode} tx=${finalTx}`;
     pushTradeRecord({
@@ -1149,10 +1191,40 @@ export const runAgentOnce = async () => {
   } catch (error) {
     const errorMessage = (error as any)?.message || 'Transaction failed';
     const anchorError = (error as any);
+    const isConstraintSeedsError = errorMessage.includes('ConstraintSeeds') || errorMessage.includes('seeds constraint');
+
+    if (swapTx && isConstraintSeedsError) {
+      applyPortfolioUpdate(action, symbol, amountValue, tradeSolAmount, market, swapMode, swapTx);
+
+      const softWarning = `Swap executed on-chain (${swapTx}), but vault bookkeeping failed on outdated deployed program ConstraintSeeds check. Redeploy patched vault program to restore on-chain trade accounting.`;
+      lastMessage = `${message} | swap=${swapMode} tx=${swapTx} | warning=${softWarning}`;
+      lastError = softWarning;
+      console.warn('Trade bookkeeping soft-failed after successful swap:', {
+        message: errorMessage,
+        vaultOwner: currentVaultOwner?.toBase58(),
+        agentWallet: keypair.publicKey.toBase58(),
+        vaultPda: vaultPda.toBase58(),
+        programId: PROGRAM_ID.toBase58(),
+        swapTx,
+        logs: (anchorError?.logs || []).join('\n'),
+      });
+      pushTradeRecord({
+        ts: new Date().toISOString(),
+        action,
+        symbol,
+        amount: amountValue,
+        riskScore: newRiskScore,
+        source: chosen.source,
+        reason: `${reason} | ${softWarning}`,
+        tx: swapTx,
+        status: 'executed',
+      });
+      return { action, message: `${message}. ${softWarning}`, tx: swapTx };
+    }
     
     // Provide detailed diagnostics for ConstraintSeeds errors
     let diagnosticMessage = errorMessage;
-    if (errorMessage.includes('ConstraintSeeds') || errorMessage.includes('seeds constraint')) {
+    if (isConstraintSeedsError) {
       diagnosticMessage = (
         `Vault address mismatch (ConstraintSeeds error).\n` +
         `Vault owner used: ${currentVaultOwner?.toBase58()}\n` +

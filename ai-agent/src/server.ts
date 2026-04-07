@@ -85,23 +85,23 @@ app.post('/api/agent/trigger', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/lab/snapshot', (req: Request, res: Response) => {
-  res.json(getLabSnapshot());
+app.get('/api/lab/snapshot', async (req: Request, res: Response) => {
+  res.json(await getLabSnapshot());
 });
 
-app.get('/api/lab/candles/:symbol', (req: Request, res: Response) => {
+app.get('/api/lab/candles/:symbol', async (req: Request, res: Response) => {
   const symbol = String(req.params.symbol || '').trim().toUpperCase();
   if (!symbol) {
     res.status(400).json({ error: 'symbol is required' });
     return;
   }
   const limit = Number(req.query.limit || 120);
-  res.json(getLabCandleSeries(symbol, Number.isFinite(limit) ? limit : 120));
+  res.json(await getLabCandleSeries(symbol, Number.isFinite(limit) ? limit : 120));
 });
 
-app.post('/api/lab/swap', (req: Request, res: Response) => {
+app.post('/api/lab/swap', async (req: Request, res: Response) => {
   const { symbolIn, symbolOut, amountIn } = req.body ?? {};
-  const result = simulateLabSwap(String(symbolIn || ''), String(symbolOut || ''), Number(amountIn || 0));
+  const result = await simulateLabSwap(String(symbolIn || ''), String(symbolOut || ''), Number(amountIn || 0));
   if (!result.ok) {
     res.status(400).json(result);
     return;

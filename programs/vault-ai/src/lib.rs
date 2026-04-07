@@ -168,7 +168,7 @@ pub struct SetAgentAuthority<'info> {
 
 #[derive(Accounts)]
 pub struct ExecuteTrade<'info> {
-    #[account(mut, seeds = [b"vault", authority.key().as_ref()], bump)]
+    #[account(mut)]
     pub vault: Account<'info, Vault>,
     pub authority: Signer<'info>,
 }

@@ -833,12 +833,12 @@ const AppContent = () => {
   }, [anchorWallet, connection, program, refreshVaultAfterMutation]);
 
 
-  const toggleVaultMode = useCallback(async (newMode: 'safe' | 'risk', enabled: boolean) => {
-    if (!program || !anchorWallet || !vault) return;
+  const toggleVaultMode = useCallback(async (newMode: 'safe' | 'risk', enabled: boolean): Promise<boolean> => {
+    if (!program || !anchorWallet || !vault) return false;
 
     if (vault.owner.toBase58() !== anchorWallet.publicKey!.toBase58()) {
       setStatus('Connected wallet is not the vault owner. Reconnect Phantom with the vault owner wallet.');
-      return;
+      return false;
     }
 
     setLoading(true);
@@ -848,7 +848,7 @@ const AppContent = () => {
       if (balance < MIN_LAMPORTS_FOR_TX) {
         setStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
         setLoading(false);
-        return;
+        return false;
       }
 
       const [vaultPda] = await PublicKey.findProgramAddress(
@@ -865,9 +865,11 @@ const AppContent = () => {
       setVaultMode(newMode);
       setVaultEnabled(enabled);
       await refreshVaultAfterMutation(`Vault mode set to ${newMode} (${enabled ? 'enabled' : 'disabled'})`);
+      return true;
     } catch (error) {
       console.error('Failed to set vault mode:', error);
       setStatus(`Failed to set vault mode: ${extractErrorMessage(error)}`);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -1014,6 +1016,31 @@ const AppContent = () => {
       setLoading(false);
     }
   }, [program, anchorWallet, vault, fetchVault, connection]);
+
+  const requestStartConsentSignature = useCallback(async (): Promise<boolean> => {
+    if (!program || !anchorWallet) return false;
+    try {
+      const balance = await connection.getBalance(anchorWallet.publicKey!);
+      if (balance < MIN_LAMPORTS_FOR_TX) {
+        setStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
+        return false;
+      }
+
+      const tx = new anchor.web3.Transaction().add(
+        new anchor.web3.TransactionInstruction({
+          programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
+          keys: [{ pubkey: anchorWallet.publicKey!, isSigner: true, isWritable: false }],
+          data: Buffer.from(`saturn-start-consent:${Date.now()}`),
+        }),
+      );
+
+      await (program.provider as AnchorProvider).sendAndConfirm(tx, []);
+      return true;
+    } catch (error) {
+      setStatus(`Start consent signature failed: ${extractErrorMessage(error)}`);
+      return false;
+    }
+  }, [program, anchorWallet, connection]);
 
   const callAgentApi = useCallback(async (path: string, method = 'GET', body?: any) => {
     if (!agentBackendConfigured) {
@@ -1162,8 +1189,17 @@ const AppContent = () => {
       }
       setStatus('Agent authority synced. Please sign to enable agent control.');
     }
+    setStatus('Please sign wallet confirmation to start the agent.');
+    const consented = await requestStartConsentSignature();
+    if (!consented) {
+      return;
+    }
+
     if (!vaultEnabled) {
-      await toggleVaultMode(vaultMode, true);
+      const enabled = await toggleVaultMode(vaultMode, true);
+      if (!enabled) {
+        return;
+      }
     }
 
     const vaultOwner = anchorWallet?.publicKey?.toBase58() ?? agentHealth?.vaultOwner ?? '';
@@ -1186,7 +1222,7 @@ const AppContent = () => {
       }
       await refreshAgentTrades();
     }
-  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades]);
+  }, [agentIntervalMinutes, anchorWallet, program, vault, backendAgentWallet, callAgentApi, setVaultAgentAuthority, agentBackendConfigured, backendUrlMismatch, vaultEnabled, toggleVaultMode, vaultMode, refreshAgentTrades, requestStartConsentSignature]);
 
   const stopRemoteAgent = useCallback(async () => {
     const result = await callAgentApi('/api/agent/stop', 'POST');

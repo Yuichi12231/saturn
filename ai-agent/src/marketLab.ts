@@ -1,3 +1,9 @@
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { clusterApiUrl, Connection } from '@solana/web3.js';
+import { Raydium } from '@raydium-io/raydium-sdk-v2';
+
 type Trend = 'bull' | 'bear' | 'sideways';
 
 export interface LabToken {
@@ -37,6 +43,10 @@ export interface SwapResult {
 const MAX_CANDLES = 240;
 const SNAPSHOT_TTL_MS = 5_000;
 const SWAP_FEE_BPS = 30;
+const SOL_USD_TTL_MS = 60_000;
+
+const ENDPOINT = (process.env.SOLANA_RPC_URL || clusterApiUrl('devnet')).trim();
+const RAYDIUM_POOL_REGISTRY_PATH = String(process.env.RAYDIUM_POOL_REGISTRY_PATH || '').trim();
 
 const tokenSeeds: Array<Pick<LabToken, 'symbol' | 'name' | 'priceUsd' | 'liquidityUsd' | 'marketCapUsd'>> = [
   { symbol: 'SOLX', name: 'Solara', priceUsd: 12.8, liquidityUsd: 180_000, marketCapUsd: 1_800_000 },
@@ -62,10 +72,74 @@ const driftByTrend: Record<Trend, number> = {
 const tokens = new Map<string, LabToken>();
 const candles = new Map<string, LabCandle[]>();
 let lastGlobalUpdateAt = 0;
+let raydiumClient: Raydium | null = null;
+let cachedSolUsd = 150;
+let cachedSolUsdAt = 0;
+
+type PoolRegistryEntry = {
+  symbol: 'SOL' | 'RAY' | 'ORCA';
+  tokenMint: string;
+  tokenDecimals: number;
+  poolId: string;
+};
+
+const connection = new Connection(ENDPOINT, 'confirmed');
+
+const resolveExistingPath = (candidate: string): string | null => {
+  if (!candidate) return null;
+  const p = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
+  return fs.existsSync(p) ? p : null;
+};
+
+const poolRegistryFile =
+  resolveExistingPath(RAYDIUM_POOL_REGISTRY_PATH)
+  || resolveExistingPath('devnet-raydium-pools.json')
+  || resolveExistingPath('ai-agent/devnet-raydium-pools.json');
+
+const loadPoolRegistry = (): PoolRegistryEntry[] => {
+  try {
+    if (!poolRegistryFile) return [];
+    const parsed = JSON.parse(fs.readFileSync(poolRegistryFile, 'utf8'));
+    return Array.isArray(parsed?.pools) ? parsed.pools : [];
+  } catch {
+    return [];
+  }
+};
+
+const onchainPools = loadPoolRegistry();
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 const randomIn = (min: number, max: number) => min + Math.random() * (max - min);
+
+const getRaydiumClient = async (): Promise<Raydium> => {
+  if (raydiumClient) return raydiumClient;
+  raydiumClient = await Raydium.load({
+    connection,
+    cluster: 'devnet',
+    disableFeatureCheck: true,
+    disableLoadToken: true,
+  });
+  return raydiumClient;
+};
+
+const getSolUsd = async (): Promise<number> => {
+  if ((Date.now() - cachedSolUsdAt) < SOL_USD_TTL_MS) return cachedSolUsd;
+  try {
+    const response = await axios.get(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+      { timeout: 8000 },
+    );
+    const next = Number(response.data?.solana?.usd || 0);
+    if (Number.isFinite(next) && next > 0) {
+      cachedSolUsd = next;
+      cachedSolUsdAt = Date.now();
+    }
+  } catch {
+    // keep last cached value
+  }
+  return cachedSolUsd;
+};
 
 const pickTrend = (): Trend => {
   const r = Math.random();
@@ -115,6 +189,59 @@ const bootstrap = () => {
   lastGlobalUpdateAt = now;
 };
 
+const updateTrendFromChange = (changePct: number): Trend => {
+  if (changePct > 0.6) return 'bull';
+  if (changePct < -0.6) return 'bear';
+  return 'sideways';
+};
+
+const syncOnchainPools = async () => {
+  if (onchainPools.length === 0) return;
+
+  const raydium = await getRaydiumClient();
+  const solUsd = await getSolUsd();
+
+  for (const pool of onchainPools) {
+    const poolInfoBundle = await raydium.cpmm.getPoolInfoFromRpc(pool.poolId);
+    const poolInfo = poolInfoBundle.poolInfo;
+    const reserveA = Number(poolInfo.mintAmountA || 0);
+    const reserveB = Number(poolInfo.mintAmountB || 0);
+    const tokenIsA = poolInfo.mintA.address === pool.tokenMint;
+    const tokenReserve = tokenIsA ? reserveA : reserveB;
+    const solReserve = tokenIsA ? reserveB : reserveA;
+    const tokenPriceSol = tokenReserve > 0 ? solReserve / tokenReserve : 0;
+    const tokenPriceUsd = Math.max(0.000001, tokenPriceSol * solUsd);
+
+    const tokenSymbol = pool.symbol === 'SOL' ? 'SOLX' : pool.symbol === 'RAY' ? 'RAYX' : 'ORCX';
+    const token = tokens.get(tokenSymbol);
+    if (!token) continue;
+
+    const prevPrice = token.priceUsd || tokenPriceUsd;
+    const high = Math.max(prevPrice, tokenPriceUsd) * (1 + randomIn(0, 0.002));
+    const low = Math.min(prevPrice, tokenPriceUsd) * (1 - randomIn(0, 0.002));
+    const changePct = prevPrice > 0 ? ((tokenPriceUsd - prevPrice) / prevPrice) * 100 : 0;
+
+    token.priceUsd = tokenPriceUsd;
+    token.liquidityUsd = Math.max(1_000, solReserve * solUsd * 2);
+    token.volume24hUsd = Math.max(token.volume24hUsd * 0.96, Math.abs(changePct) * token.liquidityUsd * 0.12);
+    token.marketCapUsd = Math.max(25_000, token.marketCapUsd * 0.85 + tokenPriceUsd * (token.marketCapUsd / Math.max(prevPrice, 0.000001)) * 0.15);
+    token.momentum = clamp(token.momentum * 0.55 + changePct / 12, -1, 1);
+    token.sentiment = clamp(token.sentiment * 0.85 + changePct / 25, -1, 1);
+    token.fundamentals = clamp(token.fundamentals * 0.98 + randomIn(-0.01, 0.01), -1, 1);
+    token.trend = updateTrendFromChange(changePct);
+    token.updatedAt = Date.now();
+
+    pushCandle(token.symbol, {
+      ts: token.updatedAt,
+      o: prevPrice,
+      h: high,
+      l: low,
+      c: tokenPriceUsd,
+      v: token.volume24hUsd / 1440,
+    });
+  }
+};
+
 const evolveToken = (token: LabToken, minutes: number) => {
   const oldPrice = token.priceUsd;
 
@@ -160,7 +287,7 @@ const evolveToken = (token: LabToken, minutes: number) => {
   });
 };
 
-const tick = () => {
+const tick = async () => {
   bootstrap();
   const now = Date.now();
   const elapsedMs = now - lastGlobalUpdateAt;
@@ -168,18 +295,21 @@ const tick = () => {
 
   const minutes = clamp(elapsedMs / 60_000, 0.1, 3);
   for (const token of tokens.values()) {
-    evolveToken(token, minutes);
+    if (!['SOLX', 'RAYX', 'ORCX'].includes(token.symbol)) {
+      evolveToken(token, minutes);
+    }
   }
+  await syncOnchainPools();
   lastGlobalUpdateAt = now;
 };
 
-const getToken = (symbol: string): LabToken | null => {
-  tick();
+const getToken = async (symbol: string): Promise<LabToken | null> => {
+  await tick();
   return tokens.get(symbol.toUpperCase()) || null;
 };
 
-export const getLabSnapshot = () => {
-  tick();
+export const getLabSnapshot = async () => {
+  await tick();
   const items = Array.from(tokens.values()).sort((a, b) => b.marketCapUsd - a.marketCapUsd);
   return {
     ts: Date.now(),
@@ -188,8 +318,8 @@ export const getLabSnapshot = () => {
   };
 };
 
-export const getLabCandleSeries = (symbol: string, limit = 120) => {
-  tick();
+export const getLabCandleSeries = async (symbol: string, limit = 120) => {
+  await tick();
   const key = symbol.toUpperCase();
   const arr = candles.get(key) || [];
   return {
@@ -198,9 +328,9 @@ export const getLabCandleSeries = (symbol: string, limit = 120) => {
   };
 };
 
-export const simulateLabSwap = (symbolIn: string, symbolOut: string, amountIn: number): SwapResult => {
-  const inToken = getToken(symbolIn);
-  const outToken = getToken(symbolOut);
+export const simulateLabSwap = async (symbolIn: string, symbolOut: string, amountIn: number): Promise<SwapResult> => {
+  const inToken = await getToken(symbolIn);
+  const outToken = await getToken(symbolOut);
 
   if (!inToken || !outToken) {
     return {
@@ -253,8 +383,8 @@ export const simulateLabSwap = (symbolIn: string, symbolOut: string, amountIn: n
   };
 };
 
-export const getAgentMarketSliceFromLab = () => {
-  tick();
+export const getAgentMarketSliceFromLab = async () => {
+  await tick();
 
   const sol = tokens.get('SOLX');
   const ray = tokens.get('RAYX');
