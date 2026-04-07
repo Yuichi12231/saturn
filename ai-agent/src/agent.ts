@@ -29,6 +29,7 @@ const VALIDATED_MODEL = GEMINI_MODEL;
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 const AGENT_EXECUTION_MODE = 'onchain';
 const MARKET_LAB_MODE = String(process.env.MARKET_LAB_MODE || '').toLowerCase() === 'true' || process.env.MARKET_LAB_MODE === '1';
+const ALLOW_RULE_FALLBACK = String(process.env.ALLOW_RULE_FALLBACK || '').toLowerCase() === 'true' || process.env.ALLOW_RULE_FALLBACK === '1';
 const SWAP_PROVIDER = String(process.env.SWAP_PROVIDER || 'raydium').toLowerCase();
 const DEVNET_TOKEN_SET_PATH = String(process.env.DEVNET_TOKEN_SET_PATH || '').trim();
 const RAYDIUM_POOL_REGISTRY_PATH = String(process.env.RAYDIUM_POOL_REGISTRY_PATH || '').trim();
@@ -117,6 +118,7 @@ console.log(`  DEVNET_TOKEN_SET_PATH=${tokenSetFile || 'not_found'}`);
 console.log(`  RAYDIUM_POOL_REGISTRY_PATH=${poolRegistryFile || 'not_found'}`);
 console.log(`  GEMINI_MODEL=${GEMINI_MODEL} (validated: ${VALIDATED_MODEL})`);
 console.log(`  GEMINI_API_KEY=${process.env.GEMINI_API_KEY ? '***' : 'NOT SET'}`);
+console.log(`  ALLOW_RULE_FALLBACK=${ALLOW_RULE_FALLBACK}`);
 console.log(`  SOLANA_RPC_URL=${process.env.SOLANA_RPC_URL || 'using default'}`);
 console.log(`  HELIUS_API_KEY=${process.env.HELIUS_API_KEY ? '***' : 'NOT SET'}`);
 console.log(`  AGENT_WALLET_SECRET_KEY=${process.env.AGENT_WALLET_SECRET_KEY ? '***' : 'NOT SET'}`);
@@ -1039,7 +1041,25 @@ export const runAgentOnce = async () => {
 
   let chosen: Decision | null = await decideWithLlm(market, heliusSignals);
   if (!chosen) {
-    chosen = decideWithRules(market);
+    if (ALLOW_RULE_FALLBACK) {
+      chosen = decideWithRules(market);
+    } else {
+      const skipMsg = 'LLM decision unavailable (Gemini error/quota). Rule fallback disabled, skipping trade.';
+      lastAction = skipMsg;
+      lastMessage = skipMsg;
+      lastError = openrouterError || skipMsg;
+      pushTradeRecord({
+        ts: new Date().toISOString(),
+        action: 'hold',
+        symbol: 'SOLX',
+        amount: 0,
+        riskScore: 50,
+        source: 'system',
+        reason: skipMsg,
+        status: 'skipped',
+      });
+      return { action: 'hold', message: skipMsg };
+    }
   }
 
   const action = chosen.action;
