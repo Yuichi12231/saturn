@@ -1022,7 +1022,7 @@ const AppContent = () => {
     try {
       const balance = await connection.getBalance(anchorWallet.publicKey!);
       if (balance < MIN_LAMPORTS_FOR_TX) {
-        setStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
+        setAgentStatus(`Low wallet balance ${(balance / 1e9).toFixed(6)} SOL. Need SOL for transaction fees.`);
         return false;
       }
 
@@ -1037,7 +1037,7 @@ const AppContent = () => {
       await (program.provider as AnchorProvider).sendAndConfirm(tx, []);
       return true;
     } catch (error) {
-      setStatus(`Start consent signature failed: ${extractErrorMessage(error)}`);
+      setAgentStatus(`Start consent signature failed: ${extractErrorMessage(error)}`);
       return false;
     }
   }, [program, anchorWallet, connection]);
@@ -1155,18 +1155,18 @@ const AppContent = () => {
     }
 
     if (!agentBackendConfigured) {
-      setStatus('Set VITE_AGENT_API_URL to your public backend agent service, then redeploy frontend.');
+      setAgentStatus('Set VITE_AGENT_API_URL to your public backend agent service, then redeploy frontend.');
       return;
     }
 
     if (backendUrlMismatch) {
-      setStatus('Backend URL is localhost but frontend is hosted. Use a public backend URL in VITE_AGENT_API_URL.');
+      setAgentStatus('Backend URL is localhost but frontend is hosted. Use a public backend URL in VITE_AGENT_API_URL.');
       return;
     }
 
     // Start always requires explicit wallet consent via signed on-chain tx.
     if (!vault) {
-      setStatus('Create vault first before starting the agent.');
+      setAgentStatus('Create vault first before starting the agent.');
       return;
     }
 
@@ -1179,17 +1179,18 @@ const AppContent = () => {
       }
     }
     if (!agentWallet) {
-      setStatus('Unable to read backend agent wallet. Ensure backend is running.');
+      setAgentStatus('Unable to read backend agent wallet. Ensure backend is running.');
       return;
     }
     if (vault.agentAuthority.toBase58() !== agentWallet) {
       const synced = await setVaultAgentAuthority(agentWallet);
       if (!synced) {
+        setAgentStatus('Failed to sync agent authority. See vault status details above.');
         return;
       }
-      setStatus('Agent authority synced. Please sign to enable agent control.');
+      setAgentStatus('Agent authority synced. Please sign to enable agent control.');
     }
-    setStatus('Please sign wallet confirmation to start the agent.');
+    setAgentStatus('Please sign wallet confirmation to start the agent.');
     const consented = await requestStartConsentSignature();
     if (!consented) {
       return;
@@ -1198,6 +1199,7 @@ const AppContent = () => {
     if (!vaultEnabled) {
       const enabled = await toggleVaultMode(vaultMode, true);
       if (!enabled) {
+        setAgentStatus('Failed to enable vault for agent start. See vault status details above.');
         return;
       }
     }
