@@ -14,9 +14,21 @@ const ENDPOINT = (
   || process.env.ALCHEMY_RPC_URL
   || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8'
 ).trim();
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3.6-plus:free';
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
+
+const getOpenRouterKeySource = (): string | null => {
+  if (process.env.OPENROUTER_API_KEY?.trim()) return 'OPENROUTER_API_KEY';
+  if (process.env.OPENROUTER_API_TOKEN?.trim()) return 'OPENROUTER_API_TOKEN';
+  if (process.env.OPENROUTER_KEY?.trim()) return 'OPENROUTER_KEY';
+  return null;
+};
+
+const getOpenRouterApiKey = (): string => {
+  const source = getOpenRouterKeySource();
+  if (!source) return '';
+  return String(process.env[source] || '').trim();
+};
 
 // Jupiter v6 API (mainnet; gracefully skipped with paper-trade fallback on devnet)
 const JUPITER_API = 'https://quote-api.jup.ag/v6';
@@ -373,13 +385,14 @@ const parseJsonFromModelText = (text: string): any => {
 };
 
 const askLlm = async (prompt: string) => {
-  if (!OPENROUTER_API_KEY) {
-    openrouterError = 'OPENROUTER_API_KEY is not configured';
+  const openrouterApiKey = getOpenRouterApiKey();
+  if (!openrouterApiKey) {
+    openrouterError = 'OpenRouter API key is not configured. Set OPENROUTER_API_KEY (or OPENROUTER_API_TOKEN / OPENROUTER_KEY).';
     return null;
   }
 
   try {
-    const client = new OpenRouter({ apiKey: OPENROUTER_API_KEY });
+    const client = new OpenRouter({ apiKey: openrouterApiKey });
     const stream = await client.chat.send({
       chatRequest: {
         model: OPENROUTER_MODEL,
@@ -652,8 +665,10 @@ export const getTradeHistory = () => tradeHistory.slice(0, 50);
 
 export const getAgentHealth = async () => {
   const balanceLamports = await connection.getBalance(keypair.publicKey);
+  const openrouterApiKey = getOpenRouterApiKey();
+  const openrouterKeySource = getOpenRouterKeySource();
 
-  const openrouterStatus = !OPENROUTER_API_KEY ? 'not_configured' : openrouterError ? 'error' : 'configured';
+  const openrouterStatus = !openrouterApiKey ? 'not_configured' : openrouterError ? 'error' : 'configured';
   const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
 
   return {
@@ -663,7 +678,8 @@ export const getAgentHealth = async () => {
     agentPublicKey: keypair.publicKey.toBase58(),
     agentBalanceSol: balanceLamports / 1e9,
     env: {
-      openrouterConfigured: Boolean(OPENROUTER_API_KEY),
+      openrouterConfigured: Boolean(openrouterApiKey),
+      openrouterKeySource,
       openrouterModel: OPENROUTER_MODEL,
       demoMode: AGENT_DEMO_MODE,
       heliusConfigured: Boolean(HELIUS_API_KEY),

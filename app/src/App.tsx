@@ -60,6 +60,7 @@ interface AgentHealth {
   agentBalanceSol?: number;
   env?: {
     openrouterConfigured?: boolean;
+    openrouterKeySource?: string | null;
     openrouterModel?: string;
     demoMode?: boolean;
     heliusConfigured?: boolean;
@@ -1366,6 +1367,7 @@ const AppContent = () => {
           {'\n'}Agent wallet: {backendAgentWallet || 'Unknown'}
           {'\n'}Backend URL: {AGENT_API_URL || 'Not configured'}
           {'\n'}OpenRouter: {agentHealth?.checks?.openrouter || 'unknown'}
+          {'\n'}OpenRouter key: {agentHealth?.env?.openrouterKeySource || 'not found'}
           {'\n'}Model: {agentHealth?.env?.openrouterModel || 'unknown'}
           {'\n'}Demo mode: {agentHealth?.env?.demoMode ? 'on' : 'off'}
           {'\n'}Helius: {agentHealth?.checks?.helius || 'unknown'}
