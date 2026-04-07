@@ -1,4 +1,4 @@
-import { OpenRouter } from '@openrouter/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import axios from 'axios';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
@@ -20,22 +20,11 @@ const ENDPOINT = (
   || 'https://solana-devnet.g.alchemy.com/v2/e2AbESRWvSs_pNNi7nal8'
 ).trim();
 
-// ── Available OpenRouter Models ────────────────────────────────────────────
-const AVAILABLE_MODELS = [
-  'nvidia/nemotron-3-super-120b-a12b:free',      // Latest Nemotron, best quality
-  'minimax/minimax-m2.5:free',                   // Minimax M2.5
-  'arcee-ai/trinity-large-preview:free',         // Trinity Large
-  'qwen/qwen3.6-plus:free',                      // Fallback (original)
-];
-
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL 
-  ? String(process.env.OPENROUTER_MODEL).trim()
-  : 'arcee-ai/trinity-large-preview:free'; // Default to Trinity
-
-// Validate model is in available list, otherwise use default
-const VALIDATED_MODEL = AVAILABLE_MODELS.includes(OPENROUTER_MODEL) 
-  ? OPENROUTER_MODEL 
-  : AVAILABLE_MODELS[0];
+// ── Gemini Model ──────────────────────────────────────────────────────────
+const GEMINI_MODEL = process.env.GEMINI_MODEL
+  ? String(process.env.GEMINI_MODEL).trim()
+  : 'gemini-2.0-flash'; // Default: fast + free tier
+const VALIDATED_MODEL = GEMINI_MODEL;
 
 const AGENT_DEMO_MODE = String(process.env.AGENT_DEMO_MODE || '').toLowerCase() === 'true' || process.env.AGENT_DEMO_MODE === '1';
 const AGENT_EXECUTION_MODE = 'onchain';
@@ -126,42 +115,28 @@ console.log(`  MARKET_LAB_MODE=${process.env.MARKET_LAB_MODE} (parsed as: ${MARK
 console.log(`  SWAP_PROVIDER=${SWAP_PROVIDER}`);
 console.log(`  DEVNET_TOKEN_SET_PATH=${tokenSetFile || 'not_found'}`);
 console.log(`  RAYDIUM_POOL_REGISTRY_PATH=${poolRegistryFile || 'not_found'}`);
-console.log(`  OPENROUTER_MODEL=${OPENROUTER_MODEL} (validated: ${VALIDATED_MODEL})`);
-console.log(`  Available models: ${AVAILABLE_MODELS.join(', ')}`);
-console.log(`  OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY ? '***' : 'NOT SET'}`);
+console.log(`  GEMINI_MODEL=${GEMINI_MODEL} (validated: ${VALIDATED_MODEL})`);
+console.log(`  GEMINI_API_KEY=${process.env.GEMINI_API_KEY ? '***' : 'NOT SET'}`);
 console.log(`  SOLANA_RPC_URL=${process.env.SOLANA_RPC_URL || 'using default'}`);
 console.log(`  HELIUS_API_KEY=${process.env.HELIUS_API_KEY ? '***' : 'NOT SET'}`);
 console.log(`  AGENT_WALLET_SECRET_KEY=${process.env.AGENT_WALLET_SECRET_KEY ? '***' : 'NOT SET'}`);
 console.log('');
 
-const getOpenRouterKeySource = (): string | null => {
-  if (process.env.OPENROUTER_API_KEY?.trim()) return 'OPENROUTER_API_KEY';
-  if (process.env.OPENROUTER_API_TOKEN?.trim()) return 'OPENROUTER_API_TOKEN';
-  if (process.env.OPENROUTER_KEY?.trim()) return 'OPENROUTER_KEY';
-  return null;
-};
+const getGeminiApiKey = (): string => String(process.env.GEMINI_API_KEY || '').trim();
 
-const getOpenRouterApiKey = (): string => {
-  const source = getOpenRouterKeySource();
-  if (!source) return '';
-  return String(process.env[source] || '').trim();
-};
+// ── Request throttling (Gemini free tier: 15 req/min) ─────────────────────
+const GEMINI_MIN_REQUEST_INTERVAL_MS = 4000; // ~15 req/min safe margin
+let lastGeminiRequestTime = 0;
 
-// ── Request throttling to prevent rate limiting ────────────────────────────
-const OPENROUTER_MIN_REQUEST_INTERVAL_MS = 2000; // Minimum 2s between requests
-let lastOpenRouterRequestTime = 0;
-
-const throttleOpenRouterRequest = async () => {
+const throttleGeminiRequest = async () => {
   const now = Date.now();
-  const timeSinceLastRequest = now - lastOpenRouterRequestTime;
-  
-  if (timeSinceLastRequest < OPENROUTER_MIN_REQUEST_INTERVAL_MS) {
-    const delayMs = OPENROUTER_MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
-    console.log(`Throttling OpenRouter request: waiting ${delayMs}ms`);
+  const elapsed = now - lastGeminiRequestTime;
+  if (elapsed < GEMINI_MIN_REQUEST_INTERVAL_MS) {
+    const delayMs = GEMINI_MIN_REQUEST_INTERVAL_MS - elapsed;
+    console.log(`Throttling Gemini request: waiting ${delayMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  
-  lastOpenRouterRequestTime = Date.now();
+  lastGeminiRequestTime = Date.now();
 };
 
 // Jupiter v6 API
@@ -505,52 +480,11 @@ const formatProviderError = (provider: string, error: unknown): string => {
   return status ? `${provider} HTTP ${status}: ${short}` : `${provider}: ${short}`;
 };
 
-const formatOpenRouterError = (error: unknown): string => {
+const formatGeminiError = (error: unknown): string => {
   const e = error as any;
-
-  // Try multiple paths to extract status code from OpenRouter SDK error
-  let status = e?.statusCode || e?.status || e?.response?.status;
-
-  // If no status yet, check if error has metadata or is from axios
-  if (!status && (e?.response?.statusCode)) {
-    status = e.response.statusCode;
-  }
-
-  // Extract error code/message from nested structures
-  const code = e?.body?.error?.code || e?.code || e?.response?.data?.error?.code;
-  const message =
-    e?.body?.error?.message
-    || e?.response?.data?.error?.message
-    || e?.response?.data?.message
-    || e?.message
-    || 'OpenRouter request failed';
-
-  // For rate limiting, include Retry-After if available
-  const retryAfter = e?.response?.headers?.['retry-after'] || e?.response?.data?.retry_after;
-  const retryInfo = retryAfter ? ` (retry after ${retryAfter}s)` : '';
-
-  const details = [
-    status ? `HTTP ${status}` : null,
-    code ? `code=${code}` : null,
-  ]
-    .filter(Boolean)
-    .join(', ');
-
-  // Debug: log full error structure if status is 429
-  if (status === 429) {
-    console.error('OpenRouter 429 Rate Limit - Full error context:', JSON.stringify({
-      statusCode: e?.statusCode,
-      status: e?.status,
-      responseStatus: e?.response?.status,
-      body: e?.body,
-      responseData: e?.response?.data,
-      message: e?.message,
-    }, null, 2));
-  }
-
-  return details
-    ? `OpenRouter ${details}: ${String(message)}${retryInfo}`
-    : `OpenRouter: ${String(message)}${retryInfo}`;
+  const status = e?.status || e?.response?.status || e?.statusCode;
+  const message = e?.message || 'Gemini request failed';
+  return status ? `Gemini HTTP ${status}: ${String(message)}` : `Gemini: ${String(message)}`;
 };
 
 const getHeliusSignals = async () => {
@@ -652,76 +586,58 @@ const parseJsonFromModelText = (text: string): any => {
 };
 
 const askLlm = async (prompt: string, retryCount = 0): Promise<any> => {
-  const openrouterApiKey = getOpenRouterApiKey();
-  if (!openrouterApiKey) {
-    openrouterError = 'OpenRouter API key is not configured. Set OPENROUTER_API_KEY (or OPENROUTER_API_TOKEN / OPENROUTER_KEY).';
+  const geminiApiKey = getGeminiApiKey();
+  if (!geminiApiKey) {
+    openrouterError = 'Gemini API key is not configured. Set GEMINI_API_KEY in Railway environment.';
     return null;
   }
 
   try {
-    // Apply client-side rate limiting to prevent 429 errors
-    await throttleOpenRouterRequest();
+    await throttleGeminiRequest();
 
-    const client = new OpenRouter({ apiKey: openrouterApiKey });
-    const stream = await client.chat.send({
-      chatRequest: {
-        model: VALIDATED_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a Solana DeFi trading agent managing a portfolio of 12 lab tokens. Analyze price trends, SMA crossovers, and momentum to make smart trading decisions. You MUST respond with ONLY a valid JSON object — no explanation, no markdown, no reasoning text. Output strictly: {"action":"buy"|"sell"|"hold","symbol":"SOLX"|"RAYX"|"ORCX"|"ATM"|"LQD"|"NOVA"|"BETA"|"GAM"|"ALF"|"DEL"|"OME"|"SIG","amount":1-10,"riskScore":1-99,"reason":"..."}',
-          },
-          { role: 'user', content: prompt },
-        ],
-        maxTokens: 250,
-        temperature: 0.1,
-        stream: true,
-      },
+    const genAI = new GoogleGenerativeAI(geminiApiKey);
+    const model = genAI.getGenerativeModel({
+      model: VALIDATED_MODEL,
+      systemInstruction: 'You are a Solana DeFi trading agent managing a portfolio of 12 lab tokens. Analyze price trends, SMA crossovers, and momentum to make smart trading decisions. You MUST respond with ONLY a valid JSON object — no explanation, no markdown, no reasoning text. Output strictly: {"action":"buy"|"sell"|"hold","symbol":"SOLX"|"RAYX"|"ORCX"|"ATM"|"LQD"|"NOVA"|"BETA"|"GAM"|"ALF"|"DEL"|"OME"|"SIG","amount":1-10,"riskScore":1-99,"reason":"..."}',
+      generationConfig: { maxOutputTokens: 300, temperature: 0.1 },
     });
 
-    let text = '';
-    for await (const chunk of (stream as AsyncIterable<any>)) {
-      const content = chunk.choices?.[0]?.delta?.content;
-      if (typeof content === 'string') {
-        text += content;
-      }
-    }
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
 
     if (!text || text.trim().length === 0) {
-      console.warn('OpenRouter returned empty or whitespace-only content');
-      throw new Error('OpenRouter returned empty response (may be rate limited or provider error).');
+      throw new Error('Gemini returned empty response.');
     }
 
     openrouterError = null;
     const parsed = parseJsonFromModelText(text);
     if (!parsed || typeof parsed !== 'object') {
-      throw new Error('OpenRouter response is not valid JSON or not an object.');
+      throw new Error('Gemini response is not valid JSON or not an object.');
     }
     return parsed;
   } catch (error) {
     const e = error as any;
-    const status = e?.statusCode || e?.status || e?.response?.status;
+    const status = e?.status || e?.response?.status;
     const message = String(e?.message || '');
 
-    // Retry transient parsing/network issues (max 3 retries total)
-    if (retryCount < 3 && (message.includes('Model output is not valid JSON') || message.toLowerCase().includes('fetch failed'))) {
+    // Retry transient JSON parse errors (max 3)
+    if (retryCount < 3 && message.includes('Model output is not valid JSON')) {
       const backoffMs = 1000 * Math.pow(2, retryCount);
-      console.warn(`OpenRouter transient error. Retrying in ${backoffMs}ms (attempt ${retryCount + 1}/3)`);
+      console.warn(`Gemini transient error. Retrying in ${backoffMs}ms (attempt ${retryCount + 1}/3)`);
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       return askLlm(prompt, retryCount + 1);
     }
 
-    // Handle rate limiting with exponential backoff (max 3 retries)
-    if (status === 429 && retryCount < 3) {
-      const backoffMs = 1000 * Math.pow(2, retryCount); // 1s, 2s, 4s
-      console.warn(`OpenRouter rate limited. Retrying in ${backoffMs}ms (attempt ${retryCount + 1}/3)`);
+    // Rate limit backoff
+    if ((status === 429 || message.includes('429')) && retryCount < 3) {
+      const backoffMs = 5000 * Math.pow(2, retryCount);
+      console.warn(`Gemini rate limited. Retrying in ${backoffMs}ms (attempt ${retryCount + 1}/3)`);
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       return askLlm(prompt, retryCount + 1);
     }
 
-    openrouterError = formatOpenRouterError(error);
-    const logStatus = e?.statusCode || e?.status || 'unknown';
-    console.warn('OpenRouter request failed:', logStatus, e?.body || e?.response?.data || e?.message);
+    openrouterError = formatGeminiError(error);
+    console.warn('Gemini request failed:', status || 'unknown', message);
     return null;
   }
 };
@@ -989,10 +905,8 @@ export const getTradeCount = () => tradeHistory.length;
 
 export const getAgentHealth = async () => {
   const balanceLamports = await connection.getBalance(keypair.publicKey);
-  const openrouterApiKey = getOpenRouterApiKey();
-  const openrouterKeySource = getOpenRouterKeySource();
-
-  const openrouterStatus = !openrouterApiKey ? 'not_configured' : openrouterError ? 'error' : 'configured';
+  const geminiApiKey = getGeminiApiKey();
+  const geminiStatus = !geminiApiKey ? 'not_configured' : openrouterError ? 'error' : 'configured';
   const heliusStatus = !HELIUS_API_KEY ? 'not_configured' : heliusError ? 'error' : 'configured';
 
   return {
@@ -1003,8 +917,8 @@ export const getAgentHealth = async () => {
     vaultOwner: currentVaultOwner ? currentVaultOwner.toBase58() : 'not_set',
     agentBalanceSol: balanceLamports / 1e9,
     env: {
-      openrouterConfigured: Boolean(openrouterApiKey),
-      openrouterKeySource,
+      openrouterConfigured: Boolean(geminiApiKey),
+      openrouterKeySource: geminiApiKey ? 'GEMINI_API_KEY' : null,
       openrouterModel: VALIDATED_MODEL,
       demoMode: AGENT_DEMO_MODE,
       executionMode: AGENT_EXECUTION_MODE,
@@ -1014,7 +928,7 @@ export const getAgentHealth = async () => {
       walletConfigured: Boolean(SECRET_KEY),
     },
     checks: {
-      openrouter: openrouterStatus,
+      openrouter: geminiStatus,
       helius: heliusStatus,
       marketData: marketDataError ? 'fallback_or_error' : 'configured',
     },
