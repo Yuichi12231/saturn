@@ -650,6 +650,16 @@ const pushTradeRecord = (record: TradeRecord) => {
   }
 };
 
+export const deleteTradeRecord = (index: number): boolean => {
+  if (index < 0 || index >= tradeHistory.length) return false;
+  tradeHistory.splice(index, 1);
+  return true;
+};
+
+export const clearTradeHistory = () => {
+  tradeHistory.length = 0;
+};
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 const decideWithRules = (market: any): Decision => {
@@ -755,6 +765,7 @@ export const getAgentState = () => ({
 });
 
 export const getTradeHistory = () => tradeHistory.slice(0, 50);
+export const getTradeCount = () => tradeHistory.length;
 
 export const getAgentHealth = async () => {
   const balanceLamports = await connection.getBalance(keypair.publicKey);

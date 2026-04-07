@@ -2,7 +2,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
 import path from 'path';
-import { getAgentHealth, getAgentState, getTradeHistory, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
+import { clearTradeHistory, deleteTradeRecord, getAgentHealth, getAgentState, getTradeHistory, runAgentOnce, startAgentSchedule, stopAgentSchedule } from './agent';
 
 dotenv.config();
 
@@ -19,6 +19,25 @@ app.get('/api/agent/status', (req: Request, res: Response) => {
 
 app.get('/api/agent/trades', (req: Request, res: Response) => {
   res.json({ trades: getTradeHistory() });
+});
+
+app.delete('/api/agent/trades/all', (req: Request, res: Response) => {
+  clearTradeHistory();
+  res.json({ ok: true, message: 'Trade history cleared' });
+});
+
+app.delete('/api/agent/trades/:index', (req: Request, res: Response) => {
+  const index = parseInt(req.params.index, 10);
+  if (Number.isNaN(index)) {
+    res.status(400).json({ error: 'Invalid index' });
+    return;
+  }
+  const deleted = deleteTradeRecord(index);
+  if (!deleted) {
+    res.status(404).json({ error: `Trade at index ${index} not found` });
+    return;
+  }
+  res.json({ ok: true, trades: getTradeHistory() });
 });
 
 app.get('/api/agent/health', async (req: Request, res: Response) => {

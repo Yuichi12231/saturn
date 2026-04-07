@@ -206,11 +206,6 @@ const AppContent = () => {
   const [marketError, setMarketError] = useState('');
   const [marketHistory, setMarketHistory] = useState<MarketSnapshot[]>([]);
 
-  // Delete trade from history
-  const deleteAgentTrade = (index: number) => {
-    setAgentTrades((prev) => prev.filter((_, i) => i !== index));
-  };
-
   // Constants derived at module level — used as-is here.
   const AGENT_API_URL = AGENT_API_BASE_URL;
   const agentBackendConfigured = AGENT_BACKEND_CONFIGURED;
@@ -875,6 +870,22 @@ const AppContent = () => {
     }
   }, [callAgentApi]);
 
+  const deleteAgentTrade = useCallback(async (index: number) => {
+    // Optimistically remove from UI
+    setAgentTrades((prev) => prev.filter((_, i) => i !== index));
+    // Sync to backend so delete survives page reload
+    const result = await callAgentApi(`/api/agent/trades/${index}`, 'DELETE');
+    // Backend returns updated list — sync to avoid index drift
+    if (result?.trades && Array.isArray(result.trades)) {
+      setAgentTrades(result.trades as AgentTrade[]);
+    }
+  }, [callAgentApi]);
+
+  const clearAllTrades = useCallback(async () => {
+    setAgentTrades([]);
+    await callAgentApi('/api/agent/trades/all', 'DELETE');
+  }, [callAgentApi]);
+
   const startRemoteAgent = useCallback(async () => {
     if (!anchorWallet || !program) {
       setAgentStatus('Connect wallet first to select your vault owner address.');
@@ -1412,7 +1423,17 @@ const AppContent = () => {
           </p>
         )}
         {/* ── Recent Trades ─────────────────────────────────────────────────── */}
-        <h3 style={{ marginTop: 8 }}>Recent Agent Trades</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 4 }}>
+          <h3 style={{ margin: 0 }}>Recent Agent Trades</h3>
+          {agentTrades.length > 0 && (
+            <button
+              onClick={clearAllTrades}
+              style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.35)', color: '#ef4444', borderRadius: 8, padding: '4px 12px', cursor: 'pointer', fontSize: '0.85em' }}
+            >
+              Clear all
+            </button>
+          )}
+        </div>
         {agentTrades.length === 0 ? (
           <p style={{ color: '#9ca3af' }}>
             No trade history yet. Start agent to see autonomous decisions. Note: history is in-memory and resets when backend restarts/redeploys.
